@@ -666,6 +666,7 @@ dependencies = [
  "num-bigint",
  "prio",
  "rand",
+ "rayon",
  "ring",
  "serde",
  "serde_json",

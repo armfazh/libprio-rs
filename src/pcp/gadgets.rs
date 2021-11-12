@@ -7,8 +7,11 @@ use crate::field::FieldElement;
 use crate::pcp::{Gadget, PcpError};
 use crate::polynomial::{poly_deg, poly_eval, poly_mul};
 
+use rayon::prelude::*;
+
 use std::any::Any;
 use std::convert::TryFrom;
+use std::marker::PhantomData;
 
 /// For input polynomials larger than or equal to this threshold, gadgets will use FFT for
 /// polynomial multiplication. Otherwise, the gadget uses direct multiplication.
@@ -214,7 +217,196 @@ impl<F: FieldElement> Gadget<F> for PolyEval<F> {
     }
 }
 
-// Check that the input parameters of g.call() are wll-formed.
+/// An arity-2 gadget that returns `poly(in[0]) * in[1]` for some polynomial `poly`.
+#[derive(Clone)]
+pub struct BlindPolyEval<F: FieldElement> {
+    poly: Vec<F>,
+    /// Size of buffer for the outer FFT multiplication.
+    n: usize,
+    /// Inverse of `n` in `F`.
+    n_inv: F,
+    /// The number of times this gadget will be called.
+    num_calls: usize,
+}
+
+impl<F: FieldElement> BlindPolyEval<F> {
+    /// Returns a `BlindPolyEval` gadget for polynomial `poly`.
+    pub fn new(poly: Vec<F>, num_calls: usize) -> Self {
+        let n = ((poly_deg(&poly) + 1) * (1 + num_calls).next_power_of_two()).next_power_of_two();
+        let n_inv = F::from(F::Integer::try_from(n).unwrap()).inv();
+        Self {
+            poly,
+            n,
+            n_inv,
+            num_calls,
+        }
+    }
+
+    fn call_poly_direct(&mut self, outp: &mut [F], inp: &[Vec<F>]) -> Result<(), PcpError> {
+        let x = &inp[0];
+        let y = &inp[1];
+
+        let mut z = y.to_vec();
+        for i in 0..self.poly.len() {
+            for j in 0..z.len() {
+                outp[j] += self.poly[i] * z[j];
+            }
+
+            if i < self.poly.len() - 1 {
+                z = poly_mul(&z, x);
+            }
+        }
+        Ok(())
+    }
+
+    fn call_poly_fft(&mut self, outp: &mut [F], inp: &[Vec<F>]) -> Result<(), PcpError> {
+        let n = self.n;
+        let x = &inp[0];
+        let y = &inp[1];
+
+        let mut x_vals = vec![F::zero(); n];
+        discrete_fourier_transform(&mut x_vals, x, n)?;
+
+        let mut z_vals = vec![F::zero(); n];
+        discrete_fourier_transform(&mut z_vals, y, n)?;
+
+        let mut z = vec![F::zero(); n];
+        let mut z_len = y.len();
+        z[..y.len()].clone_from_slice(y);
+
+        for i in 0..self.poly.len() {
+            for j in 0..z_len {
+                outp[j] += self.poly[i] * z[j];
+            }
+
+            if i < self.poly.len() - 1 {
+                for j in 0..n {
+                    z_vals[j] *= x_vals[j];
+                }
+
+                discrete_fourier_transform(&mut z, &z_vals, n)?;
+                discrete_fourier_transform_inv_finish(&mut z, n, self.n_inv);
+                z_len += x.len();
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<F: FieldElement> Gadget<F> for BlindPolyEval<F> {
+    fn call(&mut self, inp: &[F]) -> Result<F, PcpError> {
+        gadget_call_check(self, inp.len())?;
+        Ok(inp[1] * poly_eval(&self.poly, inp[0]))
+    }
+
+    fn call_poly(&mut self, outp: &mut [F], inp: &[Vec<F>]) -> Result<(), PcpError> {
+        gadget_call_poly_check(self, outp, inp)?;
+
+        for x in outp.iter_mut() {
+            *x = F::zero();
+        }
+
+        if inp[0].len() >= FFT_THRESHOLD {
+            self.call_poly_fft(outp, inp)
+        } else {
+            self.call_poly_direct(outp, inp)
+        }
+    }
+
+    fn arity(&self) -> usize {
+        2
+    }
+
+    fn degree(&self) -> usize {
+        poly_deg(&self.poly) + 1
+    }
+
+    fn calls(&self) -> usize {
+        self.num_calls
+    }
+
+    fn as_any(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+/// A wrapper gadget that applies the inner gadget to chunks of input and returns the sum of the
+/// outputs. The arity is equal to the arity of the inner gadget times the number of chunks.
+#[derive(Clone)]
+pub struct ParallelSum<F: FieldElement, G: Gadget<F>> {
+    inner: G,
+    chunks: usize,
+    phantom: PhantomData<F>,
+}
+
+impl<F: FieldElement, G: Gadget<F>> ParallelSum<F, G> {
+    /// Wraps `inner` into a parallel sum gadget with `chunks` chunks.
+    pub fn new(inner: G, chunks: usize) -> Self {
+        Self {
+            inner,
+            chunks,
+            phantom: PhantomData,
+        }
+    }
+}
+
+impl<F, G> Gadget<F> for ParallelSum<F, G>
+where
+    F: FieldElement + Sync + Send,
+    G: 'static + Gadget<F> + Clone + Sync,
+{
+    fn call(&mut self, inp: &[F]) -> Result<F, PcpError> {
+        gadget_call_check(self, inp.len())?;
+        let mut outp = F::zero();
+        for chunk in inp.chunks(self.inner.arity()) {
+            outp += self.inner.call(chunk)?;
+        }
+        Ok(outp)
+    }
+
+    fn call_poly(&mut self, outp: &mut [F], inp: &[Vec<F>]) -> Result<(), PcpError> {
+        gadget_call_poly_check(self, outp, inp)?;
+
+        let res = inp
+            .par_chunks(self.inner.arity())
+            .map(|chunk| {
+                let mut inner = self.inner.clone();
+                let mut partial_outp = vec![F::zero(); outp.len()];
+                inner.call_poly(&mut partial_outp, chunk).unwrap();
+                partial_outp
+            })
+            .reduce(
+                || vec![F::zero(); outp.len()],
+                |mut x, y| {
+                    for i in 0..x.len() {
+                        x[i] += y[i];
+                    }
+                    x
+                },
+            );
+
+        outp.clone_from_slice(&res[..outp.len()]);
+        Ok(())
+    }
+
+    fn arity(&self) -> usize {
+        self.chunks * self.inner.arity()
+    }
+
+    fn degree(&self) -> usize {
+        self.inner.degree()
+    }
+
+    fn calls(&self) -> usize {
+        self.inner.calls()
+    }
+
+    fn as_any(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+// Check that the input parameters of g.call() are well-formed.
 fn gadget_call_check<F: FieldElement, G: Gadget<F>>(
     gadget: &G,
     in_len: usize,
@@ -295,6 +487,30 @@ mod tests {
 
         let num_calls = FFT_THRESHOLD;
         let mut g: PolyEval<TestField> = PolyEval::new(poly, num_calls);
+        gadget_test(&mut g, num_calls);
+    }
+
+    #[test]
+    fn test_blind_poly_eval() {
+        let poly: Vec<TestField> = Prng::generate(Suite::Blake3).unwrap().take(10).collect();
+
+        let num_calls = FFT_THRESHOLD / 2;
+        let mut g: BlindPolyEval<TestField> = BlindPolyEval::new(poly.clone(), num_calls);
+        gadget_test(&mut g, num_calls);
+
+        let num_calls = FFT_THRESHOLD;
+        let mut g: BlindPolyEval<TestField> = BlindPolyEval::new(poly, num_calls);
+        gadget_test(&mut g, num_calls);
+    }
+
+    #[test]
+    fn test_parallel_sum() {
+        let poly: Vec<TestField> = Prng::generate(Suite::Blake3).unwrap().take(10).collect();
+        let num_calls = 10;
+        let chunks = 23;
+
+        let mut g: ParallelSum<TestField, BlindPolyEval<TestField>> =
+            ParallelSum::new(BlindPolyEval::new(poly, num_calls), chunks);
         gadget_test(&mut g, num_calls);
     }
 

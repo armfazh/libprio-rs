@@ -9,7 +9,7 @@ use prio::field::{random_vector, Field126 as F, FieldElement};
 use prio::pcp::gadgets::Mul;
 use prio::server::{generate_verification_message, ValidationMemory};
 use prio::vdaf::{
-    prio3::{Prio3Count64, Prio3Histogram64, Prio3InputShare, Prio3Sum64},
+    prio3::{Prio3Count64, Prio3CountVec64, Prio3Histogram64, Prio3InputShare, Prio3Sum64},
     suite::Suite,
     Client as Prio3Client, Share,
 };
@@ -163,6 +163,20 @@ pub fn prio3_client(c: &mut Criterion) {
         prio3_input_share_size(&prio3.shard(&(), &measurement).unwrap())
     );
     c.bench_function(&format!("prio3 sum64 ({} bits)", bits), |b| {
+        b.iter(|| {
+            prio3.shard(&(), &measurement).unwrap();
+        })
+    });
+
+    let len = 1000;
+    let prio3 = Prio3CountVec64::new(suite, num_shares, len).unwrap();
+    let measurement = vec![0; len];
+    println!(
+        "prio3 countvec64 ({} len) size = {}",
+        len,
+        prio3_input_share_size(&prio3.shard(&(), &measurement).unwrap())
+    );
+    c.bench_function(&format!("prio3 countvec64 ({} len)", len), |b| {
         b.iter(|| {
             prio3.shard(&(), &measurement).unwrap();
         })
