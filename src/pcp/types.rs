@@ -3,7 +3,7 @@
 //! A collection of [`Type`](crate::pcp::Type) implementations.
 
 use crate::field::FieldElement;
-use crate::pcp::gadgets::{Mul, PolyEval};
+use crate::pcp::gadgets::{BlindPolyEval, Mul, ParallelSum, PolyEval};
 use crate::pcp::{Gadget, PcpError, Type};
 use crate::polynomial::poly_range_check;
 
@@ -375,6 +375,140 @@ fn valid_call_check<T: Type>(
     Ok(())
 }
 
+/// A sequence of counters. This type uses a neat trick from [[BBCG+19], Corollary 4.9] to reduce
+/// the proof size to roughly the square root of the input size.
+///
+/// [BBCG+19]: https://eprint.iacr.org/2019/188
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CountVec<F> {
+    range_checker: Vec<F>,
+    len: usize,
+    chunk_len: usize,
+    gadget_calls: usize,
+}
+
+impl<F: FieldElement> CountVec<F> {
+    /// Returns a new [`CountVec`] with the given length.
+    pub fn new(len: usize) -> Self {
+        // The optimal chunk length is the square root of the input length. If the input length is
+        // not a perfect square, then round down. If the result is 0, then let the chunk length be
+        // 1 so that the underlying gadget can still be called.
+        let chunk_len = std::cmp::max(1, (len as f64).sqrt() as usize);
+
+        let mut gadget_calls = len / chunk_len;
+        if len % chunk_len != 0 {
+            gadget_calls += 1;
+        }
+
+        Self {
+            range_checker: poly_range_check(0, 2),
+            len,
+            chunk_len,
+            gadget_calls,
+        }
+    }
+}
+
+impl<F> Type for CountVec<F>
+where
+    F: FieldElement + Send + Sync,
+{
+    type Measurement = Vec<F::Integer>;
+    type Field = F;
+
+    fn encode(&self, measurement: &Vec<F::Integer>) -> Result<Vec<F>, PcpError> {
+        if measurement.len() != self.len {
+            return Err(PcpError::Encode(format!(
+                "unexpected measurement length: got {}; want {}",
+                measurement.len(),
+                self.len
+            )));
+        }
+
+        let max = F::Integer::from(F::one());
+        for value in measurement {
+            if *value > max {
+                return Err(PcpError::Encode("Count value must be 0 or 1".to_string()));
+            }
+        }
+
+        Ok(measurement.iter().map(|value| F::from(*value)).collect())
+    }
+
+    fn gadget(&self) -> Vec<Box<dyn Gadget<F>>> {
+        vec![Box::new(ParallelSum::new(
+            BlindPolyEval::new(self.range_checker.clone(), self.gadget_calls),
+            self.chunk_len,
+        ))]
+    }
+
+    fn valid(
+        &self,
+        g: &mut Vec<Box<dyn Gadget<F>>>,
+        input: &[F],
+        joint_rand: &[F],
+        num_shares: usize,
+    ) -> Result<F, PcpError> {
+        valid_call_check(self, input, joint_rand)?;
+
+        let s = F::from(F::Integer::try_from(num_shares).unwrap()).inv();
+        let mut r = joint_rand[0];
+        let mut outp = F::zero();
+        let mut padded_chunk = vec![F::zero(); 2 * self.chunk_len];
+        for chunk in input.chunks(self.chunk_len) {
+            let d = chunk.len();
+            for i in 0..self.chunk_len {
+                if i < d {
+                    padded_chunk[2 * i] = chunk[i];
+                } else {
+                    // If the chunk is smaller than the chunk length, then copy the last element of
+                    // the chunk into the remaining slots.
+                    padded_chunk[2 * i] = chunk[d - 1];
+                }
+                padded_chunk[2 * i + 1] = r * s;
+                r *= joint_rand[0];
+            }
+
+            outp += g[0].call(&padded_chunk)?;
+        }
+
+        Ok(outp)
+    }
+
+    fn truncate(&self, input: Vec<F>) -> Result<Vec<F>, PcpError> {
+        truncate_call_check(self, &input)?;
+        Ok(input)
+    }
+
+    fn input_len(&self) -> usize {
+        self.len
+    }
+
+    fn proof_len(&self) -> usize {
+        (self.chunk_len * 2) + 3 * ((1 + self.gadget_calls).next_power_of_two() - 1) + 1
+    }
+
+    fn verifier_len(&self) -> usize {
+        2 + self.chunk_len * 2
+    }
+
+    fn output_len(&self) -> usize {
+        self.len
+    }
+
+    fn joint_rand_len(&self) -> usize {
+        1
+    }
+
+    fn prove_rand_len(&self) -> usize {
+        self.chunk_len * 2
+    }
+
+    fn query_rand_len(&self) -> usize {
+        1
+    }
+}
+
 fn truncate_call_check<T: Type>(typ: &T, input: &[T::Field]) -> Result<(), PcpError> {
     if input.len() != typ.input_len() {
         return Err(PcpError::Truncate(format!(
@@ -605,6 +739,52 @@ mod tests {
             },
         )
         .unwrap();
+    }
+
+    #[test]
+    fn test_count_vec() {
+        let one = TestField::one();
+        let nine = TestField::from(9);
+
+        // Test on valid inputs.
+        for len in 0..10 {
+            let count_vec: CountVec<TestField> = CountVec::new(len);
+            pcp_validity_test(
+                &count_vec,
+                &count_vec.encode(&vec![1; len]).unwrap(),
+                &ValidityTestCase::<TestField> {
+                    expect_valid: true,
+                    expected_output: Some(vec![one; len]),
+                },
+            )
+            .unwrap();
+        }
+
+        let len = 100;
+        let count_vec: CountVec<TestField> = CountVec::new(len);
+        pcp_validity_test(
+            &count_vec,
+            &count_vec.encode(&vec![1; len]).unwrap(),
+            &ValidityTestCase::<TestField> {
+                expect_valid: true,
+                expected_output: Some(vec![one; len]),
+            },
+        )
+        .unwrap();
+
+        // Test on invalid inputs.
+        for len in 1..10 {
+            let count_vec: CountVec<TestField> = CountVec::new(len);
+            pcp_validity_test(
+                &count_vec,
+                &vec![nine; len],
+                &ValidityTestCase::<TestField> {
+                    expect_valid: false,
+                    expected_output: None,
+                },
+            )
+            .unwrap();
+        }
     }
 
     fn pcp_validity_test<T: Type>(

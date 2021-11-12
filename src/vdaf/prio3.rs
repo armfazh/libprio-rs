@@ -10,7 +10,7 @@
 //! [VDAF]: https://datatracker.ietf.org/doc/draft-patton-cfrg-vdaf/
 
 use crate::field::{Field64, Field96, FieldElement};
-use crate::pcp::types::{Count, Histogram, Sum};
+use crate::pcp::types::{Count, CountVec, Histogram, Sum};
 use crate::pcp::Type;
 use crate::prng::Prng;
 use crate::vdaf::suite::{Key, KeyDeriver, KeyStream, Suite};
@@ -35,7 +35,26 @@ impl Prio3Count64 {
         Ok(Prio3 {
             num_aggregators,
             suite,
-            typ: Count::<Field64>::new(),
+            typ: Count::new(),
+            phantom: PhantomData,
+        })
+    }
+}
+
+/// The count-vector type. Each measurement is a vector of integers in `[0,2)` and the aggregate is
+/// the element-wise sum.
+pub type Prio3CountVec64 = Prio3<CountVec<Field96>, Prio3ResultVec<u64>>;
+
+impl Prio3CountVec64 {
+    /// Construct an instance of this VDAF with the given suite and the given number of
+    /// aggregators. `len` defines the length of each measurement.
+    pub fn new(suite: Suite, num_aggregators: u8, len: usize) -> Result<Self, VdafError> {
+        check_num_aggregators(num_aggregators)?;
+
+        Ok(Prio3 {
+            num_aggregators,
+            suite,
+            typ: CountVec::new(len),
             phantom: PhantomData,
         })
     }
@@ -61,7 +80,7 @@ impl Prio3Sum64 {
         Ok(Prio3 {
             num_aggregators,
             suite,
-            typ: Sum::<Field96>::new(bits as usize)?,
+            typ: Sum::new(bits as usize)?,
             phantom: PhantomData,
         })
     }
