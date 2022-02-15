@@ -5,7 +5,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use prio::benchmarked::*;
 use prio::client::Client as Prio2Client;
 use prio::encrypt::PublicKey;
-use prio::field::{random_vector, Field128 as F, FieldElement};
+use prio::field::{random_vector, random_vector2, Field128 as F, FieldElement};
 use prio::pcp::gadgets::Mul;
 use prio::server::{generate_verification_message, ValidationMemory};
 #[cfg(feature = "multithreaded")]
@@ -41,8 +41,18 @@ pub fn fft(c: &mut Criterion) {
 pub fn prng(c: &mut Criterion) {
     let test_sizes = [16, 256, 1024, 4096];
     for size in test_sizes.iter() {
-        c.bench_function(&format!("rand, size={}", *size), |b| {
-            b.iter(|| random_vector::<F>(*size))
+        c.bench_function(
+            &format!("rand with rejection sampling, size={}", *size),
+            |b| b.iter(|| random_vector::<F>(*size)),
+        );
+    }
+}
+/// Speed test for generating a seed and deriving a pseudorandom sequence of field elements.
+pub fn prng2(c: &mut Criterion) {
+    let test_sizes = [16, 256, 1024, 4096];
+    for size in test_sizes.iter() {
+        c.bench_function(&format!("rand with modp, size={}", *size), |b| {
+            b.iter(|| random_vector2::<F>(*size))
         });
     }
 }
@@ -229,5 +239,6 @@ fn prio3_input_share_size<F: FieldElement>(input_shares: &[Prio3InputShare<F>]) 
     size
 }
 
-criterion_group!(benches, prio3_client, bool_vec, poly_mul, prng, fft);
+// criterion_group!(benches, prio3_client, bool_vec, poly_mul, prng, prng2, fft);
+criterion_group!(benches, prng, prng2);
 criterion_main!(benches);

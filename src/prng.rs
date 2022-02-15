@@ -23,6 +23,73 @@ pub enum PrngError {
 /// This type implements an iterator that generates a pseudorandom sequence of field elements. The
 /// sequence is derived from the key stream of AES-128 in CTR mode with a random IV.
 #[derive(Debug)]
+pub(crate) struct Prng2<F> {
+    phantom: PhantomData<F>,
+    key_stream: KeyStream,
+    buffer: Vec<u8>,
+    buffer_index: usize,
+    output_written: usize,
+}
+
+impl<F: FieldElement> Prng2<F> {
+    /// Generates a seed and constructs an iterator over an infinite sequence of pseudorandom field
+    /// elements.
+    pub(crate) fn generate(suite: Suite) -> Result<Self, PrngError> {
+        let key = Key::generate(suite)?;
+        let key_stream = KeyStream::from_key(&key);
+        Ok(Self::from_key_stream(key_stream))
+    }
+
+    pub(crate) fn from_key_stream(mut key_stream: KeyStream) -> Self {
+        let mut buffer = vec![0; BUFFER_SIZE_IN_ELEMENTS * F::ENCODED_SIZE];
+        key_stream.fill(&mut buffer);
+
+        Self {
+            phantom: PhantomData::<F>,
+            key_stream,
+            buffer,
+            buffer_index: 0,
+            output_written: 0,
+        }
+    }
+
+    pub(crate) fn get(&mut self) -> F {
+        loop {
+            // Seek to the next chunk of the buffer that encodes an element of F.
+            for i in (self.buffer_index..self.buffer.len()).step_by(F::ENCODED_SIZE) {
+                let j = i + F::ENCODED_SIZE;
+                if let Some(x) = match F::from_be_bytes(&self.buffer[i..j]) {
+                    Ok(x) => Some(x),
+                    Err(err) => panic!("unexpected error: {}", err),
+                } {
+                    // Set the buffer index to the next chunk.
+                    self.buffer_index = j;
+                    self.output_written += 1;
+                    return x;
+                }
+            }
+
+            // Refresh buffer with the next chunk of PRG output.
+            for b in &mut self.buffer {
+                *b = 0;
+            }
+            self.key_stream.fill(&mut self.buffer);
+            self.buffer_index = 0;
+        }
+    }
+}
+
+impl<F: FieldElement> Iterator for Prng2<F> {
+    type Item = F;
+
+    fn next(&mut self) -> Option<F> {
+        Some(self.get())
+    }
+}
+
+/// This type implements an iterator that generates a pseudorandom sequence of field elements. The
+/// sequence is derived from the key stream of AES-128 in CTR mode with a random IV.
+#[derive(Debug)]
 pub(crate) struct Prng<F> {
     phantom: PhantomData<F>,
     key_stream: KeyStream,
