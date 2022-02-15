@@ -15,8 +15,12 @@ pub(crate) const MAX_ROOTS: usize = 20;
 pub(crate) struct FieldParameters {
     /// The prime modulus `p`.
     pub p: u128,
-    /// `mu = -p^(-1) mod 2^64`.
-    pub mu: u64,
+    /// The number of bits of prime modulus `p`.
+    pub bits: usize,
+    /// `mu_montgomery = -p^(-1) mod 2^64`.
+    pub mu_montgomery: u64,
+    /// mu_barret = floor( (2^64)^(2*k) / p ), where k = ceil(self.bits/64).
+    pub mu_barret: [u64; 3],
     /// `r2 = (2^128)^2 mod p`.
     pub r2: u128,
     /// The `2^num_roots`-th -principal root of unity. This element is used to generate the
@@ -134,7 +138,7 @@ impl FieldParameters {
         // *         w = mu*z0
         // ===========
         // z3,z2,z1, 0
-        let w = self.mu.wrapping_mul(zz[0] as u64);
+        let w = self.mu_montgomery.wrapping_mul(zz[0] as u64);
         result = p[0] * (w as u128);
         hi = hi64(result);
         lo = lo64(result);
@@ -166,7 +170,7 @@ impl FieldParameters {
         // *         w = mu*z1
         // ===========
         //    z3,z2, 0
-        let w = self.mu.wrapping_mul(zz[1] as u64);
+        let w = self.mu_montgomery.wrapping_mul(zz[1] as u64);
         result = p[0] * (w as u128);
         hi = hi64(result);
         lo = lo64(result);
@@ -269,13 +273,19 @@ impl FieldParameters {
 
         assert_eq!(self.p, p, "p mismatch");
 
-        let mu = match modinverse((-(p as i128)).rem_euclid(1 << 64), 1 << 64) {
+        let mu_montgomery = match modinverse((-(p as i128)).rem_euclid(1 << 64), 1 << 64) {
             Some(mu) => mu as u64,
             None => panic!("inverse of -p (mod 2^64) is undefined"),
         };
-        assert_eq!(self.mu, mu, "mu mismatch");
+        assert_eq!(self.mu_montgomery, mu_montgomery, "mu_montgomery mismatch");
 
         let big_p = &p.to_bigint().unwrap();
+        let k = (self.bits + 63) / 64;
+        let big_mu_barret = (BigInt::from(1) << 64usize).pow(2 * k as u32) / big_p;
+        let (_, mut mu_barret) = big_mu_barret.to_u64_digits();
+        mu_barret.extend_from_slice(&vec![0u64; 3 - mu_barret.len()]);
+        assert_eq!(self.mu_barret.to_vec(), mu_barret, "mu_barret mismatch");
+
         let big_r: &BigInt = &(&(BigInt::from(1) << 128) % big_p);
         let big_r2: &BigInt = &(&(big_r * big_r) % big_p);
         let mut it = big_r2.iter_u64_digits();
@@ -314,10 +324,12 @@ impl FieldParameters {
     }
 }
 
+#[inline]
 fn lo64(x: u128) -> u128 {
     x & ((1 << 64) - 1)
 }
 
+#[inline]
 fn hi64(x: u128) -> u128 {
     x >> 64
 }
@@ -330,7 +342,9 @@ fn modp(x: u128, p: u128) -> u128 {
 
 pub(crate) const FP32: FieldParameters = FieldParameters {
     p: 4293918721, // 32-bit prime
-    mu: 17302828673139736575,
+    bits: 32,
+    mu_montgomery: 17302828673139736575,
+    mu_barret: [1144192553754236320, 4296016127, 0],
     r2: 1676699750,
     g: 1074114499,
     num_roots: 20,
@@ -344,7 +358,9 @@ pub(crate) const FP32: FieldParameters = FieldParameters {
 
 pub(crate) const FP64: FieldParameters = FieldParameters {
     p: 18446744069414584321, // 64-bit prime
-    mu: 18446744069414584319,
+    bits: 64,
+    mu_montgomery: 18446744069414584319,
+    mu_barret: [4294967295, 1, 0],
     r2: 4294967295,
     g: 959634606461954525,
     num_roots: 32,
@@ -376,7 +392,9 @@ pub(crate) const FP64: FieldParameters = FieldParameters {
 
 pub(crate) const FP96: FieldParameters = FieldParameters {
     p: 79228148845226978974766202881, // 96-bit prime
-    mu: 18446744073709551615,
+    bits: 96,
+    mu_montgomery: 18446744073709551615,
+    mu_barret: [3617583841623747071, 2358285344724066, 4294968037],
     r2: 69162923446439011319006025217,
     g: 11329412859948499305522312170,
     num_roots: 64,
@@ -408,7 +426,9 @@ pub(crate) const FP96: FieldParameters = FieldParameters {
 
 pub(crate) const FP128: FieldParameters = FieldParameters {
     p: 340282366920938462946865773367900766209, // 128-bit prime
-    mu: 18446744073709551615,
+    bits: 128,
+    mu_montgomery: 18446744073709551615,
+    mu_barret: [783, 28, 1],
     r2: 403909908237944342183153,
     g: 107630958476043550189608038630704257141,
     num_roots: 66,

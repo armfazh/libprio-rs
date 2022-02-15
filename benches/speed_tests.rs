@@ -2,20 +2,29 @@
 
 use criterion::{criterion_group, criterion_main, Criterion};
 
-use prio::field::{random_vector, Field128, FieldElement};
+use prio::field::{random_vector, random_vector_pad_then_reduce, Field128};
 
-pub fn prng(c: &mut Criterion) {
-    let test_sizes = [1, 4, 16, 256, 1024, 4096];
-    for size in test_sizes.iter() {
+const TEST_SIZES: [usize; 3] = [256, 1024, 4096];
+
+// Benchmark for generating field elements using rejection sampling method.
+pub fn prng_rejection_sampling(c: &mut Criterion) {
+    for size in TEST_SIZES.iter() {
         c.bench_function(&format!("rejection sampling, size={}", *size), |b| {
             b.iter(|| random_vector::<Field128>(*size))
         });
     }
-
-    // TODO Add benchmark for random_vector using pad-then-reduce and Phillipp's method.
 }
 
-// TODO Add benchmarks for different prng methods for prio3.
+// Benchmark for generating field elements using pad and reduce method.
+pub fn prng_pad_reduce(c: &mut Criterion) {
+    for size in TEST_SIZES.iter() {
+        c.bench_function(&format!("pad_and_reduce, size={}", *size), |b| {
+            b.iter(|| random_vector_pad_then_reduce::<Field128>(*size))
+        });
+    }
+}
 
-criterion_group!(benches, prng);
+// TODO Phillipp's method.
+
+criterion_group!(benches, prng_rejection_sampling, prng_pad_reduce,);
 criterion_main!(benches);
