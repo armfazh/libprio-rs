@@ -5,7 +5,7 @@
 #[cfg(test)]
 use rand::{prelude::*, Rng};
 
-use crate::expander::{get_expander, ExpID, HashID};
+use crate::expander::{get_expander, ExpID, XofID};
 
 /// For each set of field parameters we pre-compute the 1st, 2nd, 4th, ..., 2^20-th principal roots
 /// of unity. The largest of these is used to run the FFT algorithm on an input of size 2^20. This
@@ -268,7 +268,7 @@ impl FieldParameters {
         let mut l = input.len();
         while l >= 2 * k {
             let chunk = &mut input[l - 2 * k..l];
-            let reduced = self.barret(&chunk);
+            let reduced = self.barret(chunk);
             chunk[..k].copy_from_slice(&reduced);
             input.truncate(l - k);
             l = input.len();
@@ -332,11 +332,11 @@ impl FieldParameters {
     }
 
     pub fn hash_to_field(&self, msg: &[u8], count: usize) -> Vec<u128> {
-        let k = 2 * self.bits;
+        let k = self.bits;
         let ell = (self.bits + k + 7) / 8;
         let length = count * ell;
-        let dst = "Prio::DeriveFieldElements".as_bytes();
-        let exp = get_expander(ExpID::XMD(HashID::SHA256), dst, k);
+        let dst = "Prio::DeriveFieldElements::DST".as_bytes();
+        let exp = get_expander(ExpID::XOF(XofID::SHAKE128), dst, k);
         let pseudo = exp.expand(msg, length);
         let mut u = Vec::<u128>::with_capacity(count);
         for i in 0..count {
