@@ -12,9 +12,13 @@
 #[macro_use]
 extern crate static_assertions;
 
+#[macro_use]
+extern crate lazy_static;
+
 pub mod benchmarked;
 pub mod client;
 pub mod encrypt;
+mod expander;
 mod fft;
 pub mod field;
 mod fp;
