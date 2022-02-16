@@ -286,6 +286,24 @@ impl FieldParameters {
         out
     }
 
+    /// Creates a field element from an arbitrary-length byte array in big endian order.
+    pub fn from_be_bytes_simpler(&self, bytes: &[u8]) -> u128 {
+        const U64SIZE: usize = std::mem::size_of::<u64>();
+        let mut x = [0u64; 4];
+        let mut chunk = [0u8; U64SIZE];
+        for (i, ch) in bytes.chunks(U64SIZE).rev().enumerate() {
+            chunk[U64SIZE - ch.len()..].copy_from_slice(ch);
+            x[i] = u64::from_be_bytes(chunk);
+        }
+
+        let reduced = self.barret(&x);
+        let mut out = 0u128;
+        for &i in reduced.iter().rev() {
+            out = (out << 64) + (i as u128);
+        }
+        out
+    }
+
     /// Barret modular reduction using base b=2^64.
     ///
     /// Given a little-endian vector `x` of size 2*k, returns a little-endian vector corresponding
@@ -297,18 +315,22 @@ impl FieldParameters {
         if x.len() < 2 * k {
             panic!("short input on barret reduction");
         }
+        let mut buffer0 = vec![0u64; 8];
+        let mut buffer1 = vec![0u64; 8];
 
         let mu = &self.mu_barret[..k + 1];
         let p64 = &[lo64(self.p) as u64, hi64(self.p) as u64, 0u64];
         let q1 = &x[k - 1..];
-        let q2 = mul(q1, mu);
+        let q2 = &mut buffer0[..q1.len() + mu.len()];
+        mul(q2, q1, mu);
         let q3 = &q2[k + 1..];
 
         let r1 = &x[..k + 1];
-        let r2m = mul(q3, &p64[..k]);
+        let r2m = &mut buffer1[..q3.len() + p64[..k].len()];
+        mul(r2m, q3, &p64[..k]);
         let r2 = &r2m[..k + 1];
         let (mut r, is_r_neg) = sub(r1, r2);
-        r = strip(r, k + 1);
+        strip(&mut r, k + 1);
 
         if is_r_neg {
             let mut bk1 = vec![0u64; k + 1];
@@ -318,12 +340,13 @@ impl FieldParameters {
         }
 
         loop {
-            let (r1, is_neg) = sub(&r, &p64[..k + 1]);
+            let (mut r1, is_neg) = sub(&r, &p64[..k + 1]);
             if is_neg {
-                r = strip(r, k);
+                strip(&mut r, k);
                 break;
             } else {
-                r = strip(r1, k + 1);
+                strip(&mut r1, k + 1);
+                r = r1;
             }
         }
         r
@@ -470,15 +493,12 @@ fn borrowing_sub(x: u64, y: u64, borrow_in: bool) -> (u64, bool) {
 }
 
 #[inline]
-fn strip(mut x: Vec<u64>, k: usize) -> Vec<u64> {
-    while let Some(&xi) = x.last() {
-        if x.len() > k && xi == 0 {
-            x.pop();
-        } else {
-            break;
-        }
+fn strip(x: &mut Vec<u64>, k: usize) {
+    let mut i = x.len() - 1;
+    while i > k && x[i] == 0 {
+        i -= 1;
     }
-    x
+    x.truncate(i);
 }
 
 fn add(x: &[u64], y: &[u64]) -> Vec<u64> {
@@ -511,8 +531,7 @@ fn sub(x: &[u64], y: &[u64]) -> (Vec<u64>, bool) {
     (z, bi)
 }
 
-fn mul(x: &[u64], y: &[u64]) -> Vec<u64> {
-    let mut z = vec![0u64; x.len() + y.len()];
+fn mul(z: &mut [u64], x: &[u64], y: &[u64]) {
     for (i, xi) in x.iter().enumerate() {
         let mut carry = 0;
         for (j, yj) in y.iter().enumerate() {
@@ -524,7 +543,6 @@ fn mul(x: &[u64], y: &[u64]) -> Vec<u64> {
         }
         z[i + y.len()] += lo64(carry) as u64;
     }
-    z
 }
 
 fn modp(x: u128, p: u128) -> u128 {
@@ -723,6 +741,7 @@ mod tests {
             arithmetic_test(&t.fp);
             barret_test(&t.fp);
             from_be_bytes_test(&t.fp);
+            from_be_bytes_simpler_test(&t.fp);
         }
     }
 
@@ -804,6 +823,22 @@ mod tests {
             rng.fill(&mut bytes[..]);
             let big_buf = BigInt::from_bytes_be(Sign::Plus, &bytes);
             let fp_elem = fp.from_be_bytes(&bytes);
+            let got = fp_elem.to_bigint().unwrap();
+            let want = &big_buf % big_p;
+            assert_eq!(got, want, "prime: {} input: {}", fp.p, big_buf);
+        }
+    }
+
+    fn from_be_bytes_simpler_test(fp: &FieldParameters) {
+        let mut rng = rand::thread_rng();
+        let big_p = &fp.p.to_bigint().unwrap();
+        let u8size = (fp.bits + 7) / 8;
+        let mut bytes = vec![0u8; 2 * u8size];
+
+        for _ in 0..1000 {
+            rng.fill(&mut bytes[..]);
+            let big_buf = BigInt::from_bytes_be(Sign::Plus, &bytes);
+            let fp_elem = fp.from_be_bytes_simpler(&bytes);
             let got = fp_elem.to_bigint().unwrap();
             let want = &big_buf % big_p;
             assert_eq!(got, want, "prime: {} input: {}", fp.p, big_buf);
