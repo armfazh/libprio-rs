@@ -6,7 +6,7 @@
 //! Each field has an associated parameter called the "generator" that generates a multiplicative
 //! subgroup of order `2^n` for some `n`.
 
-use crate::vdaf::suite::KeyStream;
+use crate::vdaf::suite::{Key, KeyStream};
 
 use crate::{
     fp::{FP128, FP32, FP64, FP96},
@@ -654,12 +654,14 @@ pub fn random_vector<F: FieldElement>(len: usize) -> Result<Vec<F>, PrngError> {
 
 /// Generates `len` field elements from a byte stream provided using pad and reduce method.
 pub fn random_vector_pad_then_reduce<F: FieldElement>(
-    stream: &mut KeyStream,
     len: usize,
     padding: usize,
 ) -> Result<Vec<F>, PrngError> {
+    let key = Key::generate(Suite::Aes128CtrHmacSha256).unwrap();
+    let mut key_stream = KeyStream::from_key(&key);
     let mut buf = vec![0; len * (F::ENCODED_SIZE + padding)];
-    stream.fill(&mut buf);
+    key_stream.fill(&mut buf);
+
     Ok(buf
         .chunks(F::ENCODED_SIZE + padding)
         .map(|chunk| F::from_be_bytes(chunk).unwrap())
@@ -669,7 +671,10 @@ pub fn random_vector_pad_then_reduce<F: FieldElement>(
 /// Generates `len` field elements from a byte stream provided using hash to field method.
 pub fn random_vector_hash_to_field<F: FieldElement>(len: usize) -> Result<Vec<F>, PrngError> {
     let buf = "Prio::DeriveFieldElements";
-    F::hash_to_field(buf.as_bytes(), len).map_err(|x| panic!("{}", x.to_string()))
+    match F::hash_to_field(buf.as_bytes(), len) {
+        Ok(x) => Ok(x),
+        Err(e) => panic!("{}", e.to_string()),
+    }
 }
 
 #[cfg(test)]

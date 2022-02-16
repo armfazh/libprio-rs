@@ -21,8 +21,8 @@ pub(crate) struct FieldParameters {
     pub bits: usize,
     /// `mu_montgomery = -p^(-1) mod 2^64`.
     pub mu_montgomery: u64,
-    /// mu_barret = floor( (2^32)^(2*k) / p ), where k = ceil(self.bits/32).
-    pub mu_barret: [u32; 5],
+    /// mu_barret = floor( (2^64)^(2*k) / p ), where k = ceil(self.bits/64).
+    pub mu_barret: [u64; 3],
     /// `r2 = (2^128)^2 mod p`.
     pub r2: u128,
     /// The `2^num_roots`-th -principal root of unity. This element is used to generate the
@@ -253,16 +253,16 @@ impl FieldParameters {
     /// Creates a field element from an arbitrary-length byte array in big endian order.
     pub fn from_be_bytes(&self, bytes: &[u8]) -> u128 {
         use std::convert::TryInto;
-        let k = (self.bits + 31) / 32;
-        let u32size = std::mem::size_of::<u32>();
-        let u32words = (bytes.len() + u32size - 1) / u32size;
-        let num_chunks = (u32words + k - 1) / k;
-        let mut input = vec![0u32; k * num_chunks];
+        let k = (self.bits + 63) / 64;
+        let u64size = std::mem::size_of::<u64>();
+        let u64words = (bytes.len() + u64size - 1) / u64size;
+        let num_chunks = (u64words + k - 1) / k;
+        let mut input = vec![0u64; k * num_chunks];
 
-        for (i, ch) in bytes.rchunks(u32size).enumerate() {
-            let mut chunk = vec![0u8; 4 - ch.len()];
+        for (i, ch) in bytes.rchunks(u64size).enumerate() {
+            let mut chunk = vec![0u8; 8 - ch.len()];
             chunk.extend_from_slice(ch);
-            input[i] = u32::from_be_bytes(chunk.try_into().unwrap());
+            input[i] = u64::from_be_bytes(chunk.try_into().unwrap());
         }
 
         let mut l = input.len();
@@ -274,53 +274,51 @@ impl FieldParameters {
             l = input.len();
         }
 
+        if ((self.bits + 7) / 8) < bytes.len() && bytes.len() <= k * u64size {
+            input.extend_from_slice(vec![0u64; 2 * k - input.len()].as_slice());
+            input = self.barret(&input);
+        }
+
         let mut out = 0u128;
         for &i in input.iter().rev() {
-            out = (out << 32) + i as u128;
+            out = (out << 64) + (i as u128);
         }
         out
     }
 
-    /// Barret modular reduction using base b=2^32.
+    /// Barret modular reduction using base b=2^64.
     ///
     /// Given a little-endian vector `x` of size 2*k, returns a little-endian vector corresponding
     /// to x mod p.
     /// Implementation follows Algorithm 14.42 - Barrett modular reduction as appears in
     /// "Handbook of Applied Cryptography", by A. Menezes, P. van Oorschot, and S. Vanstone.
-    fn barret(&self, x: &[u32]) -> Vec<u32> {
-        let k = (self.bits + 31) / 32;
+    fn barret(&self, x: &[u64]) -> Vec<u64> {
+        let k = (self.bits + 63) / 64;
         if x.len() < 2 * k {
             panic!("short input on barret reduction");
         }
 
         let mu = &self.mu_barret[..k + 1];
-        let p64 = &[lo64(self.p) as u64, hi64(self.p) as u64];
-        let p32 = &[
-            lo32(p64[0]) as u32,
-            hi32(p64[0]) as u32,
-            lo32(p64[1]) as u32,
-            hi32(p64[1]) as u32,
-            0u32,
-        ];
+        let p64 = &[lo64(self.p) as u64, hi64(self.p) as u64, 0u64];
         let q1 = &x[k - 1..];
         let q2 = mul(q1, mu);
         let q3 = &q2[k + 1..];
 
         let r1 = &x[..k + 1];
-        let r2m = mul(q3, &p32[..k]);
+        let r2m = mul(q3, &p64[..k]);
         let r2 = &r2m[..k + 1];
         let (mut r, is_r_neg) = sub(r1, r2);
         r = strip(r, k + 1);
 
         if is_r_neg {
-            let mut bk1 = vec![0u32; k + 1];
+            let mut bk1 = vec![0u64; k + 1];
             bk1.push(1);
             r = add(&r, &bk1); // r += b^(k+1)
             r.resize(k + 1, 0);
         }
 
         loop {
-            let (r1, is_neg) = sub(&r, &p32[..k + 1]);
+            let (r1, is_neg) = sub(&r, &p64[..k + 1]);
             if is_neg {
                 r = strip(r, k);
                 break;
@@ -331,18 +329,20 @@ impl FieldParameters {
         r
     }
 
-    pub fn hash_to_field(&self, msg: &[u8], count: usize) -> Vec<u128> {
-        let k = self.bits;
-        let ell = (self.bits + k + 7) / 8;
-        let length = count * ell;
+    /// Hashes a message producing a set of `n` field elements.
+    pub fn hash_to_field(&self, msg: &[u8], n: usize) -> Vec<u128> {
+        let sec_level = self.bits; // Set as the size of prime modulus.
         let dst = "Prio::DeriveFieldElements::DST".as_bytes();
-        let exp = get_expander(ExpID::XOF(XofID::SHAKE128), dst, k);
+        let exp = get_expander(ExpID::XOF(XofID::SHAKE128), dst, sec_level);
+
+        let ell = (self.bits + sec_level + 7) / 8;
+        let length = n * ell;
         let pseudo = exp.expand(msg, length);
-        let mut u = Vec::<u128>::with_capacity(count);
-        for i in 0..count {
+
+        let mut u = vec![0u128; n];
+        for (i, ui) in u.iter_mut().enumerate() {
             let offset: usize = ell * i;
-            let t = &pseudo[offset..(offset + ell)];
-            u.push(self.from_be_bytes(t))
+            *ui = self.from_be_bytes(&pseudo[offset..(offset + ell)]);
         }
         u
     }
@@ -379,10 +379,10 @@ impl FieldParameters {
         assert_eq!(self.mu_montgomery, mu_montgomery, "mu_montgomery mismatch");
 
         let big_p = &p.to_bigint().unwrap();
-        let k = (self.bits + 31) / 32;
-        let big_mu_barret = (BigInt::from(1) << 32usize).pow(2 * k as u32) / big_p;
-        let (_, mut mu_barret) = big_mu_barret.to_u32_digits();
-        mu_barret.extend_from_slice(&vec![0u32; 5 - mu_barret.len()]);
+        let k = (self.bits + 63) / 64;
+        let big_mu_barret = (BigInt::from(1) << 64usize).pow(2 * k as u32) / big_p;
+        let (_, mut mu_barret) = big_mu_barret.to_u64_digits();
+        mu_barret.extend_from_slice(&vec![0u64; 3 - mu_barret.len()]);
         assert_eq!(self.mu_barret.to_vec(), mu_barret, "mu_barret mismatch");
 
         let big_r: &BigInt = &(&(BigInt::from(1) << 128) % big_p);
@@ -443,54 +443,34 @@ impl FieldParameters {
 //     s
 // }
 
+#[inline]
 fn lo64(x: u128) -> u128 {
     x & ((1 << 64) - 1)
 }
 
+#[inline]
 fn hi64(x: u128) -> u128 {
     x >> 64
 }
 
-fn lo32(x: u64) -> u64 {
-    x & ((1 << 32) - 1)
-}
-
-fn hi32(x: u64) -> u64 {
-    x >> 32
-}
-
-fn mul(x: &[u32], y: &[u32]) -> Vec<u32> {
-    let l = x.len() + y.len();
-    let mut z = vec![0u32; l];
-    for (i, xi) in x.iter().enumerate() {
-        let mut carry = 0;
-        for (j, yj) in y.iter().enumerate() {
-            let zij = ((*xi as u64) * (*yj as u64))
-                .wrapping_add(z[i + j] as u64)
-                .wrapping_add(carry);
-            z[i + j] = lo32(zij) as u32;
-            carry = hi32(zij);
-        }
-        z[i + y.len()] += lo32(carry) as u32;
-    }
-    z
-}
-
-fn carrying_add(x: u32, y: u32, carry_in: bool) -> (u32, bool) {
-    let add = (x as u64) + (y as u64) + (carry_in as u64);
-    let z = (add & 0xffffffff) as u32;
-    let carry_out = ((add >> 32) != 0) as bool;
+#[inline]
+fn carrying_add(x: u64, y: u64, carry_in: bool) -> (u64, bool) {
+    let add = (x as u128) + (y as u128) + (carry_in as u128);
+    let z = (add & 0xffffffffffffffff) as u64;
+    let carry_out = ((add >> 64) != 0) as bool;
     (z, carry_out)
 }
 
-fn borrowing_sub(x: u32, y: u32, borrow_in: bool) -> (u32, bool) {
-    let sub = (x as i64) - (y as i64) - (borrow_in as i64);
-    let z = (sub & 0xffffffff) as u32;
-    let borrow_out = ((sub >> 32) != 0) as bool;
+#[inline]
+fn borrowing_sub(x: u64, y: u64, borrow_in: bool) -> (u64, bool) {
+    let sub = (x as i128) - (y as i128) - (borrow_in as i128);
+    let z = (sub & 0xffffffffffffffff) as u64;
+    let borrow_out = ((sub >> 64) != 0) as bool;
     (z, borrow_out)
 }
 
-fn strip(mut x: Vec<u32>, k: usize) -> Vec<u32> {
+#[inline]
+fn strip(mut x: Vec<u64>, k: usize) -> Vec<u64> {
     while let Some(&xi) = x.last() {
         if x.len() > k && xi == 0 {
             x.pop();
@@ -501,34 +481,50 @@ fn strip(mut x: Vec<u32>, k: usize) -> Vec<u32> {
     x
 }
 
-fn add(x: &[u32], y: &[u32]) -> Vec<u32> {
+fn add(x: &[u64], y: &[u64]) -> Vec<u64> {
     if x.len() != y.len() {
         panic!("wrong sizes add: {} {}", x.len(), y.len())
     }
-    let mut z = Vec::<u32>::with_capacity(x.len() + 1);
+    let mut z = Vec::<u64>::with_capacity(x.len() + 1);
     let mut ci = false;
     for (xi, yi) in x.iter().zip(y.iter()) {
         let (zi, co) = carrying_add(*xi, *yi, ci);
         z.push(zi);
         ci = co;
     }
-    z.push(ci as u32);
+    z.push(ci as u64);
     z
 }
 
-fn sub(x: &[u32], y: &[u32]) -> (Vec<u32>, bool) {
+fn sub(x: &[u64], y: &[u64]) -> (Vec<u64>, bool) {
     if x.len() != y.len() {
         panic!("wrong sizes sub: {} {}", x.len(), y.len())
     }
-    let mut z = Vec::<u32>::with_capacity(x.len() + 1);
+    let mut z = Vec::<u64>::with_capacity(x.len() + 1);
     let mut bi = false;
     for (xi, yi) in x.iter().zip(y.iter()) {
         let (zi, bo) = borrowing_sub(*xi, *yi, bi);
         z.push(zi);
         bi = bo;
     }
-    z.push((0i32 - (bi as i32)) as u32);
+    z.push((0i64 - (bi as i64)) as u64);
     (z, bi)
+}
+
+fn mul(x: &[u64], y: &[u64]) -> Vec<u64> {
+    let mut z = vec![0u64; x.len() + y.len()];
+    for (i, xi) in x.iter().enumerate() {
+        let mut carry = 0;
+        for (j, yj) in y.iter().enumerate() {
+            let zij = ((*xi as u128) * (*yj as u128))
+                .wrapping_add(z[i + j] as u128)
+                .wrapping_add(carry);
+            z[i + j] = lo64(zij) as u64;
+            carry = hi64(zij);
+        }
+        z[i + y.len()] += lo64(carry) as u64;
+    }
+    z
 }
 
 fn modp(x: u128, p: u128) -> u128 {
@@ -541,7 +537,7 @@ pub(crate) const FP32: FieldParameters = FieldParameters {
     p: 4293918721, // 32-bit prime
     bits: 32,
     mu_montgomery: 17302828673139736575,
-    mu_barret: [1048831, 1, 0, 0, 0],
+    mu_barret: [1144192553754236320, 4296016127, 0],
     r2: 1676699750,
     g: 1074114499,
     num_roots: 20,
@@ -557,7 +553,7 @@ pub(crate) const FP64: FieldParameters = FieldParameters {
     p: 18446744069414584321, // 64-bit prime
     bits: 64,
     mu_montgomery: 18446744069414584319,
-    mu_barret: [4294967295, 0, 1, 0, 0],
+    mu_barret: [4294967295, 1, 0],
     r2: 4294967295,
     g: 959634606461954525,
     num_roots: 32,
@@ -591,7 +587,7 @@ pub(crate) const FP96: FieldParameters = FieldParameters {
     p: 79228148845226978974766202881, // 96-bit prime
     bits: 96,
     mu_montgomery: 18446744073709551615,
-    mu_barret: [406869090, 549081, 741, 1, 0],
+    mu_barret: [3617583841623747071, 2358285344724066, 4294968037],
     r2: 69162923446439011319006025217,
     g: 11329412859948499305522312170,
     num_roots: 64,
@@ -625,7 +621,7 @@ pub(crate) const FP128: FieldParameters = FieldParameters {
     p: 340282366920938462946865773367900766209, // 128-bit prime
     bits: 128,
     mu_montgomery: 18446744073709551615,
-    mu_barret: [783, 0, 28, 0, 1],
+    mu_barret: [783, 28, 1],
     r2: 403909908237944342183153,
     g: 107630958476043550189608038630704257141,
     num_roots: 66,
@@ -716,7 +712,7 @@ mod tests {
             },
         ];
 
-        for t in test_fps.into_iter().rev() {
+        for t in test_fps.into_iter() {
             //  Check that the field parameters have been constructed properly.
             t.fp.check(t.expected_p, t.expected_g, t.expected_order);
 
@@ -775,24 +771,24 @@ mod tests {
 
     fn barret_test(fp: &FieldParameters) {
         let mut rng = rand::thread_rng();
-        let k = (fp.bits + 31) / 32;
-        let mut buf = vec![0u32; 2 * k];
+        let k = (fp.bits + 63) / 64;
+        let mut buf = vec![0u64; 2 * k];
         let mut big_buf: BigInt;
         let big_p = &fp.p.to_bigint().unwrap();
-        let mut bytes = [0u8; 4];
+        let mut bytes = [0u8; 8];
 
         for _ in 1..1000 {
             big_buf = BigInt::default();
             for b in buf.iter_mut().rev() {
                 rng.fill(&mut bytes);
-                *b = u32::from_be_bytes(bytes);
-                big_buf = (big_buf << 32) + BigInt::from_bytes_be(Sign::Plus, &bytes);
+                *b = u64::from_be_bytes(bytes);
+                big_buf = (big_buf << 64) + BigInt::from_bytes_be(Sign::Plus, &bytes);
             }
 
             let buf_mod_p = fp.barret(&buf);
             let mut got = BigInt::default();
             for &i in buf_mod_p.iter().rev() {
-                got = (got << 32) + i.to_bigint().unwrap();
+                got = (got << 64) + i.to_bigint().unwrap();
             }
             let want = &big_buf % big_p;
             assert_eq!(got, want, "prime: {} input: {}", fp.p, big_buf);
