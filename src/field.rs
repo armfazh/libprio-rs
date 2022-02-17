@@ -47,7 +47,7 @@ pub enum FieldError {
 
 /// Byte order for encoding FieldElement values into byte sequences.
 #[derive(Clone, Copy, Debug)]
-enum ByteOrder {
+pub enum ByteOrder {
     /// Big endian byte order.
     BigEndian,
     /// Little endian byte order.
@@ -85,11 +85,17 @@ pub trait FieldElement:
     /// Size in bytes of the encoding of a value.
     const ENCODED_SIZE: usize;
 
+    /// Encoding order.
+    const ENCODING_ORDER: ByteOrder;
+
     /// The error returned if converting `usize` to an `Integer` fails.
     type IntegerTryFromError: std::error::Error;
 
     /// The error returend if converting an `Integer` to a `u64` fails.
     type TryIntoU64Error: std::error::Error;
+
+    /// The error returend if converting an `Integer` to a `u128` fails.
+    type TryIntoU128Error: std::error::Error;
 
     /// The integer representation of the field element.
     type Integer: Copy
@@ -103,7 +109,8 @@ pub trait FieldElement:
         + Sub<Output = <Self as FieldElement>::Integer>
         + From<Self>
         + TryFrom<usize, Error = Self::IntegerTryFromError>
-        + TryInto<u64, Error = Self::TryIntoU64Error>;
+        + TryInto<u64, Error = Self::TryIntoU64Error>
+        + TryInto<u128, Error = Self::TryIntoU128Error>;
 
     /// Modular exponentation, i.e., `self^exp (mod p)`.
     fn pow(&self, exp: Self::Integer) -> Self;
@@ -244,6 +251,22 @@ impl<'de, F: FieldElement> Visitor<'de> for FieldElementVisitor<F> {
     }
 }
 
+#[inline]
+fn carrying_add(x: u64, y: u64, carry_in: bool) -> (u64, bool) {
+    let add = (x as u128) + (y as u128) + (carry_in as u128);
+    let z = (add & 0xffffffffffffffff) as u64;
+    let carry_out = ((add >> 64) != 0) as bool;
+    (z, carry_out)
+}
+
+#[inline]
+fn borrowing_sub(x: u64, y: u64, borrow_in: bool) -> (u64, bool) {
+    let sub = (x as i128) - (y as i128) - (borrow_in as i128);
+    let z = (sub & 0xffffffffffffffff) as u64;
+    let borrow_out = ((sub >> 64) != 0) as bool;
+    (z, borrow_out)
+}
+
 macro_rules! make_field {
     (
         $(#[$meta:meta])*
@@ -294,21 +317,181 @@ macro_rules! make_field {
             }
 
             fn from_be_bytes(bytes: &[u8]) -> Result<Self, FieldError> {
-                if Self::ENCODED_SIZE > bytes.len() {
-                    return Err(FieldError::ShortRead);
+                use std::convert::TryInto;
+                let k = ($fp.bits + 63) / 64;
+                let u64size = std::mem::size_of::<u64>();
+                let u64words = (bytes.len() + u64size - 1) / u64size;
+                let num_chunks = (u64words + k - 1) / k;
+                let mut input = vec![0u64; k * num_chunks];
+
+                for (i, ch) in bytes.rchunks(u64size).enumerate() {
+                    let mut chunk = vec![0u8; 8 - ch.len()];
+                    chunk.extend_from_slice(ch);
+                    input[i] = u64::from_be_bytes(chunk.try_into().unwrap());
                 }
-                Ok(Self($fp.elem($fp.from_be_bytes(bytes))))
-            }
-            fn from_be_bytes_simpler(bytes: &[u8]) -> Result<Self, FieldError>{
-                if bytes.len() != 2*Self::ENCODED_SIZE  {
-                    return Err(FieldError::ShortRead);
+
+                let mut l = input.len();
+                while l >= 2 * k {
+                    let chunk = &mut input[l - 2 * k..l];
+                    let reduced = Self::barret(chunk);
+                    chunk[..k].copy_from_slice(&reduced);
+                    input.truncate(l - k);
+                    l = input.len();
                 }
-                Ok(Self($fp.elem($fp.from_be_bytes_simpler(bytes))))
+
+                if (($fp.bits + 7) / 8) < bytes.len() && bytes.len() <= k * u64size {
+                    input.extend_from_slice(vec![0u64; 2 * k - input.len()].as_slice());
+                    input = Self::barret(&input);
+                }
+
+                let mut out = 0u128;
+                for &i in input.iter().rev() {
+                    out = (out << 64) + (i as u128);
+                }
+
+                Ok(Self($fp.elem(out)))
             }
 
-            fn hash_to_field(bytes: &[u8],count:usize) -> Result<Vec<Self>, FieldError> {
-                let x = $fp.hash_to_field(bytes, count);
-                Ok(x.iter().map(|&x| Self(x) ).collect())
+            fn from_be_bytes_simpler(bytes: &[u8;2*Self::ENCODED_SIZE]) -> Result<Self, FieldError>{
+                const U64SIZE: usize = std::mem::size_of::<u64>();
+                let mut x = [0u64; 4];
+                let mut chunk = [0u8; U64SIZE];
+                for (i, ch) in bytes.chunks(U64SIZE).rev().enumerate() {
+                    chunk[U64SIZE - ch.len()..].copy_from_slice(ch);
+                    x[i] = u64::from_be_bytes(chunk);
+                }
+
+                let reduced = Self::barret(&x);
+                let mut out = 0u128;
+                for &i in reduced.iter().rev() {
+                    out = (out << 64) + (i as u128);
+                }
+
+                Ok(Self($fp.elem(out)))
+            }
+
+            fn add(x: &[u64], y: &[u64]) -> Vec<u64> {
+                if x.len() != y.len() {
+                    panic!("wrong sizes add: {} {}", x.len(), y.len())
+                }
+                let mut z = Vec::<u64>::with_capacity(x.len() + 1);
+                let mut ci = false;
+                for (xi, yi) in x.iter().zip(y.iter()) {
+                    let (zi, co) = carrying_add(*xi, *yi, ci);
+                    z.push(zi);
+                    ci = co;
+                }
+                z.push(ci as u64);
+                z
+            }
+
+            fn sub(x: &[u64], y: &[u64]) -> (Vec<u64>, bool) {
+                if x.len() != y.len() {
+                    panic!("wrong sizes sub: {} {}", x.len(), y.len())
+                }
+                let mut z = Vec::<u64>::with_capacity(x.len() + 1);
+                let mut bi = false;
+                for (xi, yi) in x.iter().zip(y.iter()) {
+                    let (zi, bo) = borrowing_sub(*xi, *yi, bi);
+                    z.push(zi);
+                    bi = bo;
+                }
+                z.push((0i64 - (bi as i64)) as u64);
+                (z, bi)
+            }
+
+            fn mul(z: &mut [u64], x: &[u64], y: &[u64]) {
+                let lo64 = |x: u128| -> u128 { x & ((1 << 64) - 1) };
+                let hi64 = |x: u128| -> u128 { x >> 64 };
+                for (i, xi) in x.iter().enumerate() {
+                    let mut carry = 0;
+                    for (j, yj) in y.iter().enumerate() {
+                        let zij = ((*xi as u128) * (*yj as u128))
+                            .wrapping_add(z[i + j] as u128)
+                            .wrapping_add(carry);
+                        z[i + j] = lo64(zij) as u64;
+                        carry = hi64(zij);
+                    }
+                    z[i + y.len()] += lo64(carry) as u64;
+                }
+            }
+
+            /// Barret modular reduction using base b=2^64.
+            ///
+            /// Given a little-endian vector `x` of size 2*k, returns a little-endian vector corresponding
+            /// to x mod p.
+            /// Implementation follows Algorithm 14.42 - Barrett modular reduction as appears in
+            /// "Handbook of Applied Cryptography", by A. Menezes, P. van Oorschot, and S. Vanstone.
+            fn barret(x: &[u64]) -> Vec<u64> {
+                let k = ($fp.bits + 63) / 64;
+                if x.len() < 2 * k {
+                    panic!("short input on barret reduction");
+                }
+
+                let strip = |v: &mut Vec<u64>, l: usize| {
+                    let mut i = v.len() - 1;
+                    while i > l && v[i] == 0 {
+                        i -= 1;
+                    }
+                    v.truncate(i);
+                };
+
+                let lo64 = |x: u128| -> u128 { x & ((1 << 64) - 1) };
+                let hi64 = |x: u128| -> u128 { x >> 64 };
+
+                let mut buffer0 = vec![0u64; 8];
+                let mut buffer1 = vec![0u64; 8];
+
+                let mu = &$fp.mu_barret[..k + 1];
+                let p64 = &[lo64($fp.p) as u64, hi64($fp.p) as u64, 0u64];
+                let q1 = &x[k - 1..];
+                let q2 = &mut buffer0[..q1.len() + mu.len()];
+                Self::mul(q2, q1, mu);
+                let q3 = &q2[k + 1..];
+
+                let r1 = &x[..k + 1];
+                let r2m = &mut buffer1[..q3.len() + p64[..k].len()];
+                Self::mul(r2m, q3, &p64[..k]);
+                let r2 = &r2m[..k + 1];
+                let (mut r, is_r_neg) = Self::sub(r1, r2);
+                strip(&mut r, k + 1);
+
+                if is_r_neg {
+                    let mut bk1 = vec![0u64; k + 1];
+                    bk1.push(1);
+                    r = Self::add(&r, &bk1); // r += b^(k+1)
+                    r.resize(k + 1, 0);
+                }
+
+                loop {
+                    let (mut r1, is_neg) = Self::sub(&r, &p64[..k + 1]);
+                    if is_neg {
+                        strip(&mut r, k);
+                        break;
+                    } else {
+                        strip(&mut r1, k + 1);
+                        r = r1;
+                    }
+                }
+                r
+            }
+
+            fn hash_to_field(msg: &[u8], n: usize) -> Result<Vec<Self>, FieldError> {
+                use crate::expander::{get_expander, ExpID, XofID};
+                let sec_level = $fp.bits; // Set as the size of prime modulus.
+                let dst = "Prio::DeriveFieldElements::DST".as_bytes();
+                let exp = get_expander(ExpID::XOF(XofID::SHAKE128), dst, sec_level);
+
+                let ell = ($fp.bits + sec_level + 7) / 8;
+                let length = n * ell;
+                let pseudo = exp.expand(msg, length);
+
+                let mut u = vec![Self::default(); n];
+                for (i, ui) in u.iter_mut().enumerate() {
+                    let offset: usize = ell * i;
+                    *ui = Self::from_be_bytes(&pseudo[offset..(offset + ell)])?;
+                }
+                Ok(u)
             }
         }
 
@@ -506,9 +689,11 @@ macro_rules! make_field {
 
         impl FieldElement for $elem {
             const ENCODED_SIZE: usize = $encoding_size;
+            const ENCODING_ORDER: ByteOrder = $encoding_order;
             type Integer = $int;
             type IntegerTryFromError = <Self::Integer as TryFrom<usize>>::Error;
             type TryIntoU64Error = <Self::Integer as TryInto<u64>>::Error;
+            type TryIntoU128Error = <Self::Integer as TryInto<u128>>::Error;
 
             fn pow(&self, exp: Self::Integer) -> Self {
                 Self($fp.pow(self.0, u128::try_from(exp).unwrap()))
@@ -527,7 +712,7 @@ macro_rules! make_field {
             }
 
             fn from_be_bytes_simpler(bytes: &[u8]) -> Result<Self, FieldError> {
-                $elem::from_be_bytes_simpler(bytes)
+                $elem::from_be_bytes_simpler(bytes.try_into().unwrap())
             }
 
             fn hash_to_field(bytes: &[u8], count:usize) -> Result<Vec<Self>, FieldError>{
@@ -711,6 +896,8 @@ mod tests {
     use crate::fp::MAX_ROOTS;
     use crate::prng::Prng;
     use assert_matches::assert_matches;
+    use num_bigint::{BigInt, Sign, ToBigInt};
+    use rand::Rng;
     use std::io::{Cursor, Write};
 
     #[test]
@@ -737,6 +924,46 @@ mod tests {
         let wrong_len = vec![Field32::zero(); 9];
         let result = merge_vector(&mut lhs, &wrong_len);
         assert_matches!(result, Err(FieldError::InputSizeMismatch));
+    }
+
+    fn from_be_bytes_test<F: FieldElement>() {
+        let mut rng = rand::thread_rng();
+        let p: u128 = F::modulus().try_into().unwrap();
+        let big_p = p.to_bigint().unwrap();
+        let encode = match F::ENCODING_ORDER {
+            ByteOrder::BigEndian => BigInt::from_bytes_be,
+            ByteOrder::LittleEndian => BigInt::from_bytes_le,
+        };
+
+        for i in 0..1000 {
+            let mut bytes = vec![0u8; i];
+            rng.fill(&mut bytes[..]);
+            let big_buf = BigInt::from_bytes_be(Sign::Plus, &bytes);
+            let fp_elem: Vec<u8> = F::from_be_bytes(&bytes).unwrap().into();
+            let got = encode(Sign::Plus, &fp_elem);
+            let want = &big_buf % &big_p;
+            assert_eq!(got, want, "prime: {} input: {}", big_p, big_buf);
+        }
+    }
+
+    fn from_be_bytes_simpler_test<F: FieldElement>() {
+        let mut rng = rand::thread_rng();
+        let p: u128 = F::modulus().try_into().unwrap();
+        let big_p = p.to_bigint().unwrap();
+        let mut bytes = vec![0u8; 2 * F::ENCODED_SIZE];
+        let encode = match F::ENCODING_ORDER {
+            ByteOrder::BigEndian => BigInt::from_bytes_be,
+            ByteOrder::LittleEndian => BigInt::from_bytes_le,
+        };
+
+        for _ in 0..1000 {
+            rng.fill(&mut bytes[..]);
+            let big_buf = BigInt::from_bytes_be(Sign::Plus, &bytes);
+            let fp_elem: Vec<u8> = F::from_be_bytes_simpler(&bytes).unwrap().into();
+            let got = encode(Sign::Plus, &fp_elem);
+            let want = &big_buf % &big_p;
+            assert_eq!(got, want, "prime: {} input: {}", big_p, big_buf);
+        }
     }
 
     // Some of the checks in this function, like `assert_eq!(one - one, zero)`
@@ -819,7 +1046,6 @@ mod tests {
         // serialization
         let test_inputs = vec![zero, one, prng.get(), F::from(int_modulus - int_one)];
         for want in test_inputs.iter() {
-            println!("check {:?}", want);
             let mut bytes: Vec<u8> = vec![];
             bytes.write_all(&(*want).into()).unwrap();
 
@@ -833,6 +1059,9 @@ mod tests {
         let serialized_vec = F::slice_into_byte_vec(&test_inputs);
         let deserialized = F::byte_slice_into_vec(&serialized_vec).unwrap();
         assert_eq!(deserialized, test_inputs);
+
+        from_be_bytes_test::<F>();
+        from_be_bytes_simpler_test::<F>();
     }
 
     #[test]

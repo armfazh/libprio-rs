@@ -51,7 +51,7 @@ pub fn prng_hash_to_field(c: &mut Criterion) {
 
 criterion_group!(
     benches,
-    prng_rejection_sampling,
+    // prng_rejection_sampling,
     prng_pad_reduce_simpler,
     prng_pad_reduce,
     prng_hash_to_field
