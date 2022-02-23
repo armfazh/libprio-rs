@@ -54,6 +54,35 @@ pub enum ByteOrder {
     LittleEndian,
 }
 
+/// TryFromUint allows converting primitive data types into FieldElement::Integer.
+pub trait TryFromUint: Sized {
+    /// Error of the conversion.
+    type Err: Debug;
+    /// Succeds if the input fits on the implementor.
+    fn try_from_uint(_: u128) -> Result<Self, Self::Err>;
+}
+
+impl TryFromUint for u32 {
+    type Err = <u32 as TryFrom<u128>>::Error;
+    fn try_from_uint(x: u128) -> Result<Self, Self::Err> {
+        u32::try_from(x)
+    }
+}
+
+impl TryFromUint for u64 {
+    type Err = <u64 as TryFrom<u128>>::Error;
+    fn try_from_uint(x: u128) -> Result<Self, Self::Err> {
+        u64::try_from(x)
+    }
+}
+
+impl TryFromUint for u128 {
+    type Err = <u128 as TryFrom<u128>>::Error;
+    fn try_from_uint(x: u128) -> Result<Self, Self::Err> {
+        Ok(x)
+    }
+}
+
 /// Objects with this trait represent an element of `GF(p)` for some prime `p`.
 pub trait FieldElement:
     Sized
@@ -108,6 +137,7 @@ pub trait FieldElement:
         + Shr<Output = <Self as FieldElement>::Integer>
         + Sub<Output = <Self as FieldElement>::Integer>
         + From<Self>
+        + TryFromUint
         + TryFrom<usize, Error = Self::IntegerTryFromError>
         + TryInto<u64, Error = Self::TryIntoU64Error>
         + TryInto<u128, Error = Self::TryIntoU128Error>;
@@ -776,7 +806,7 @@ pub fn random_vector<F: FieldElement>(len: usize) -> Result<Vec<F>, PrngError> {
 
 /// Generates `len` field elements from a byte stream provided using pad and reduce method.
 pub fn random_vector_pad_then_reduce<F: FieldElement>(len: usize) -> Result<Vec<F>, PrngError> {
-    let key = Key::generate(Suite::Aes128CtrHmacSha256).unwrap();
+    let key = Key::generate(Suite::Aes128CtrHmacSha256)?;
     let mut key_stream = KeyStream::from_key(&key);
     let mut buf = vec![0; len * (2 * F::ENCODED_SIZE)];
     key_stream.fill(&mut buf);
@@ -785,6 +815,37 @@ pub fn random_vector_pad_then_reduce<F: FieldElement>(len: usize) -> Result<Vec<
         .chunks(2 * F::ENCODED_SIZE)
         .map(|chunk| F::from_be_bytes(chunk).unwrap())
         .collect())
+}
+
+/// Generates `len` field elements from a byte stream provided using borrow and reduce method.
+pub fn random_vector_borrow_then_reduce<F: FieldElement>(len: usize) -> Result<Vec<F>, PrngError> {
+    let key = Key::generate(Suite::Aes128CtrHmacSha256)?;
+    let mut key_stream = KeyStream::from_key(&key);
+    let mut buf = vec![0; 16 + (len - 1) * F::ENCODED_SIZE];
+    key_stream.fill(&mut buf);
+
+    let mut r = u128::from_be_bytes(buf[..16].try_into().unwrap());
+    let randomness: Vec<u128> = buf[16..]
+        .chunks(F::ENCODED_SIZE)
+        .map(|chunk| {
+            let mut num = 0u128;
+            for &c in chunk.iter().rev() {
+                num = (num << 8) + (c as u128);
+            }
+            num
+        })
+        .collect();
+
+    let p: u128 = F::modulus().try_into().unwrap();
+    let mut out = Vec::<F>::with_capacity(len);
+    for i in 0..len {
+        out.push(F::from(F::Integer::try_from_uint(r % p).unwrap()));
+        if i < randomness.len() {
+            r /= p;
+            r |= randomness[i];
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
