@@ -31,6 +31,10 @@ use std::{
 };
 use subtle::{Choice, ConditionallyNegatable, ConditionallySelectable, ConstantTimeEq};
 
+mod fiat_crypto_fp128;
+mod field128;
+// pub use field128::Field128;
+
 #[cfg(feature = "experimental")]
 mod field255;
 
