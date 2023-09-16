@@ -81,32 +81,16 @@ macro_rules! makeFp {
     };
 }
 
-impl Field128 {
-    // fn try_from_bytes(bytes: &[u8], mask: u128) -> Result<Self, FieldError> {
-    //     if Self::ENCODED_SIZE > bytes.len() {
-    //         return Err(FieldError::ShortRead);
-    //     }
-
-    //     let mut int = 0;
-    //     for i in 0..Self::ENCODED_SIZE {
-    //         int |= (bytes[i] as u128) << (i << 3);
-    //     }
-
-    //     int &= mask;
-
-    //     if int >= FP128_PARAMS.p {
-    //         return Err(FieldError::ModulusOverflow);
-    //     }
-    //     // FieldParameters::montgomery() will return a value that has been fully reduced
-    //     // mod p, satisfying the invariant on Self.
-    //     Ok(Self(FP128_PARAMS.montgomery(int)))
-    // }
-}
-
 impl Default for Field128 {
     #[inline]
     fn default() -> Self {
         makeFp!(u64::default(), u64::default())
+    }
+}
+
+impl From<Fp128MontgomeryDomainFieldElement> for Field128 {
+    fn from(val: Fp128MontgomeryDomainFieldElement) -> Self {
+        Self(val)
     }
 }
 
@@ -246,20 +230,16 @@ impl From<Field128> for u128 {
 
 impl<'a> TryFrom<&'a [u8]> for Field128 {
     type Error = FieldError;
-
-    fn try_from(bytes: &[u8]) -> Result<Self, FieldError> {
-        let mut in_bytes = [0u8; FIELD128_ENCODED_SIZE];
-        in_bytes.copy_from_slice(bytes);
-        let mut value = [0u64; 2];
-        fp128_from_bytes(&mut value, &in_bytes);
-        let value_u128: u128 = ((value[1] as u128) << 64) | (value[0] as u128);
-        // (todo) must check value is in range.
-        if value_u128 > 0 {
-            return Err(FieldError::IntegerTryFrom);
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        let array: [u8; FIELD128_ENCODED_SIZE] =
+            bytes.try_into().map_err(|_| FieldError::ShortRead)?;
+        let x = u128::from_le_bytes(array);
+        if x >= FIELD128_PRIME {
+            return Err(FieldError::ModulusOverflow);
         }
-        Ok(Self(Into::<Fp128MontgomeryDomainFieldElement>::into(
-            Into::<Fp128NonMontgomeryDomainFieldElement>::into(value_u128),
-        )))
+        let mut non = Fp128NonMontgomeryDomainFieldElement(Default::default());
+        fp128_from_bytes(&mut non.0, &array);
+        Ok(Field128(Fp128MontgomeryDomainFieldElement::from(non)))
     }
 }
 
@@ -336,10 +316,8 @@ impl FieldElement for Field128 {
         self.pow(FIELD128_PRIME - 2)
     }
 
-    fn try_from_random(_bytes: &[u8]) -> Result<Self, FieldError> {
-        // todo: decide how to acccept input from a random vector.
-        // Field128::try_from(bytes, FP128_PARAMS.bit_mask)
-        unimplemented!()
+    fn try_from_random(bytes: &[u8]) -> Result<Self, FieldError> {
+        Field128::try_from(bytes)
     }
 
     #[inline]
