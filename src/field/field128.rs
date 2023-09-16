@@ -25,30 +25,44 @@ use std::{
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
 impl From<Fp128NonMontgomeryDomainFieldElement> for u128 {
-    fn from(value: Fp128NonMontgomeryDomainFieldElement) -> Self {
-        ((value.0[1] as u128) << 64) | (value.0[0] as u128)
+    fn from(x: Fp128NonMontgomeryDomainFieldElement) -> Self {
+        ((x.0[1] as u128) << 64) | (x.0[0] as u128)
     }
 }
 
 impl From<u128> for Fp128NonMontgomeryDomainFieldElement {
-    fn from(val: u128) -> Self {
-        Fp128NonMontgomeryDomainFieldElement([val as u64, (val >> 64) as u64])
+    // todo: must check bounds
+    fn from(x: u128) -> Self {
+        Self([x as u64, (x >> 64) as u64])
     }
 }
 
 impl From<Fp128MontgomeryDomainFieldElement> for Fp128NonMontgomeryDomainFieldElement {
-    fn from(val: Fp128MontgomeryDomainFieldElement) -> Self {
-        let mut out = Fp128NonMontgomeryDomainFieldElement(Default::default());
-        fp128_from_montgomery(&mut out, &val);
-        out
+    fn from(x: Fp128MontgomeryDomainFieldElement) -> Self {
+        let mut z = Self(Default::default());
+        fp128_from_montgomery(&mut z, &x);
+        z
     }
 }
 
 impl From<Fp128NonMontgomeryDomainFieldElement> for Fp128MontgomeryDomainFieldElement {
-    fn from(val: Fp128NonMontgomeryDomainFieldElement) -> Self {
-        let mut out = Fp128MontgomeryDomainFieldElement(Default::default());
-        fp128_to_montgomery(&mut out, &val);
-        out
+    fn from(x: Fp128NonMontgomeryDomainFieldElement) -> Self {
+        let mut z = Self(Default::default());
+        fp128_to_montgomery(&mut z, &x);
+        z
+    }
+}
+
+impl From<Fp128MontgomeryDomainFieldElement> for u128 {
+    fn from(x: Fp128MontgomeryDomainFieldElement) -> Self {
+        u128::from(Fp128NonMontgomeryDomainFieldElement::from(x))
+    }
+}
+
+impl From<u128> for Fp128MontgomeryDomainFieldElement {
+    // todo: must check bounds
+    fn from(x: u128) -> Self {
+        Self::from(Fp128NonMontgomeryDomainFieldElement::from(x))
     }
 }
 
@@ -66,7 +80,7 @@ impl Hash for Fp128MontgomeryDomainFieldElement {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 
 /// Field128 represents an element of the prime field GF((2^62-2^3+1)*2^66+1).
 ///
@@ -82,27 +96,24 @@ macro_rules! makeFp {
 }
 
 impl Default for Field128 {
-    #[inline]
     fn default() -> Self {
         makeFp!(u64::default(), u64::default())
     }
 }
 
 impl From<Fp128MontgomeryDomainFieldElement> for Field128 {
-    fn from(val: Fp128MontgomeryDomainFieldElement) -> Self {
-        Self(val)
+    fn from(x: Fp128MontgomeryDomainFieldElement) -> Self {
+        Self(x)
     }
 }
 
 impl ConstantTimeEq for Field128 {
-    #[inline]
     fn ct_eq(&self, rhs: &Self) -> Choice {
         u64::ct_eq(&self.0[0], &rhs.0[0]) & u64::ct_eq(&self.0[1], &rhs.0[1])
     }
 }
 
 impl ConditionallySelectable for Field128 {
-    #[inline]
     fn conditional_select(a: &Self, b: &Self, c: Choice) -> Self {
         makeFp!(
             u64::conditional_select(&a.0[0], &b.0[0], c),
@@ -114,7 +125,7 @@ impl ConditionallySelectable for Field128 {
 impl Add for Field128 {
     type Output = Self;
     fn add(self, rhs: Self) -> Self::Output {
-        let mut out = Field128::default();
+        let mut out = Self::default();
         fp128_add(&mut out.0, &self.0, &rhs.0);
         out
     }
@@ -136,7 +147,7 @@ impl AddAssign for Field128 {
 impl Sub for Field128 {
     type Output = Self;
     fn sub(self, rhs: Self) -> Self::Output {
-        let mut out = Field128::default();
+        let mut out = Self::default();
         fp128_sub(&mut out.0, &self.0, &rhs.0);
         out
     }
@@ -158,7 +169,7 @@ impl SubAssign for Field128 {
 impl Mul for Field128 {
     type Output = Self;
     fn mul(self, rhs: Self) -> Self::Output {
-        let mut out = Field128::default();
+        let mut out = Self::default();
         fp128_mul(&mut out.0, &self.0, &rhs.0);
         out
     }
@@ -200,7 +211,7 @@ impl DivAssign for Field128 {
 impl Neg for Field128 {
     type Output = Self;
     fn neg(self) -> Self::Output {
-        let mut out = Field128::default();
+        let mut out = Self::default();
         fp128_opp(&mut out.0, &self.0);
         out
     }
@@ -214,17 +225,15 @@ impl Neg for &Field128 {
 }
 
 impl From<u128> for Field128 {
-    fn from(_x: u128) -> Self {
-        // must check that u128 is full reduced, or decide to reduce?
-        // u128 => bytes => Field128
-        // u128::try_from(x).unwrap()
-        unimplemented!()
+    // From tolerates input values bigger than the modulus p, unlike try_from that returns an error.
+    fn from(x: u128) -> Self {
+        Self::from(Fp128MontgomeryDomainFieldElement::from(x))
     }
 }
 
 impl From<Field128> for u128 {
     fn from(x: Field128) -> Self {
-        Into::<u128>::into(Into::<Fp128NonMontgomeryDomainFieldElement>::into(x.0))
+        u128::from(Fp128NonMontgomeryDomainFieldElement::from(x.0))
     }
 }
 
@@ -311,7 +320,6 @@ impl Decode for Field128 {
 impl FieldElement for Field128 {
     const ENCODED_SIZE: usize = FIELD128_ENCODED_SIZE;
 
-    #[inline]
     fn inv(&self) -> Self {
         self.pow(FIELD128_PRIME - 2)
     }
@@ -320,15 +328,12 @@ impl FieldElement for Field128 {
         Field128::try_from(bytes)
     }
 
-    #[inline]
     fn zero() -> Self {
         Self::default()
     }
 
-    #[inline]
     fn one() -> Self {
-        // Since FIELD128_UROOTS[i] is the root-of-unity to the i-th power,
-        // so FIELD128_UROOTS[0] = 1.
+        // By definition, FIELD128_UROOTS[0] = 1.
         FIELD128_UROOTS[0]
     }
 }
@@ -385,7 +390,8 @@ const FIELD128_ENCODED_SIZE: usize = 16;
 ///                   = 7^(2^62-2^3+1)
 ///                   = 145091266659756586618791329697897684742
 /// Then, converted to Montgomery domain with R=2^128.
-///   FIELD128_PRIMITIVE_UROOT = PRIMITIVE_UROOT * 2^128
+///   toMont = lambda x: x*2**128
+///   FIELD128_PRIMITIVE_UROOT = toMont(PRIMITIVE_UROOT)
 ///                            = 0x50f8f7f554db309cf0111fb98c6b9875
 // Field128(Fp128MontgomeryDomainFieldElement([
 static FIELD128_PRIMITIVE_UROOT: Field128 = makeFp!(0xf0111fb98c6b9875, 0x50f8f7f554db309c);
@@ -398,27 +404,27 @@ const FIELD128_NUM_UROOTS: usize = 66;
 ///   PRIMITIVE_UROOT = GF(p).primitive_element()^(2^62-2^3+1)
 ///   toMont = lambda x: x*2**128
 ///   toHex = lambda x: list(map(hex, ZZ(x).digits(2**64)))
-///   FIELD128_UROOTS = [ toHex(toMont(b**i)) for i in range(0,21) ]
+///   FIELD128_UROOTS = [ toHex(toMont(PRIMITIVE_UROOT**(2**i))) for i in range(66,66-21,-1) ]
 static FIELD128_UROOTS: [Field128; 20 + 1] = [
-    makeFp!(0xffffffffffffffff, 0x1b),
-    makeFp!(0xf0111fb98c6b9875, 0x50f8f7f554db309c),
-    makeFp!(0x336824df50a3e9de, 0x1f70898af1701972),
-    makeFp!(0x52084516b37d72db, 0x8bfac52aac2c36e9),
-    makeFp!(0x8b45f6e90b16542d, 0xd9b5db39af523ffb),
-    makeFp!(0xec875e5c00353b61, 0x1bd0dcb83d7ea68a),
-    makeFp!(0x4444393ff6c7e30c, 0xa71f88583de4e579),
-    makeFp!(0x259ae62476ae0522, 0xc38d70695f91561e),
-    makeFp!(0x3c5dd0cda73814c2, 0x1a29ef0cd721372e),
-    makeFp!(0xf5df5ca55e4b2158, 0xa8f54fcb7822853f),
-    makeFp!(0x2b5a0f0e88eda7fa, 0x327e63c2205a06ae),
-    makeFp!(0x5db505eaaab5261d, 0xdb7a4c65816d8488),
-    makeFp!(0x64ed61974e585c72, 0x7dab815089a2a138),
-    makeFp!(0x6cf557b0cb3a2f3b, 0x3cff2f56bf6877d7),
-    makeFp!(0x2b809b5aeb580d92, 0xba46c3968632b291),
-    makeFp!(0x20fd8b7d3df3a711, 0x2bb109cbdaafa592),
-    makeFp!(0x9e4fc0f4006111e3, 0x54879fe858345e92),
-    makeFp!(0xdaadd17a3e528054, 0x5a99e1f583619898),
-    makeFp!(0x15643d3043bfe8d6, 0x88a9b82ef788b332),
-    makeFp!(0xfd5ce8b146115bc7, 0x2bed551a665599c8),
-    makeFp!(0x996ef60497805c22, 0x853e4df8bbb45538),
+    makeFp!(0xffffffffffffffff, 0x000000000000001b),
+    makeFp!(0x0000000000000002, 0xffffffffffffffc8),
+    makeFp!(0x8ff94ea745b7d9d6, 0x6171e408747992c7),
+    makeFp!(0x1323bb095fba9556, 0x7f2a4e6655e5a49c),
+    makeFp!(0xd1c455956aafabfc, 0x3d661493c5e89442),
+    makeFp!(0x416d53fbcdfcc65c, 0x5c159e1cffd5eca0),
+    makeFp!(0x1428d15e766f5f3e, 0x960d5c8696ec3aa3),
+    makeFp!(0x8f0cef59f8c23f3e, 0xcce83f596bb28730),
+    makeFp!(0x432d8d01ae187081, 0x12b496afe629224c),
+    makeFp!(0x0edc26fa686e3d3b, 0xc2026e57b1554ea9),
+    makeFp!(0x79663ccecfe8c86c, 0xf38c95d1e57405ea),
+    makeFp!(0xfecc377cf0f47a9f, 0x2b486d42d73283bd),
+    makeFp!(0x0ab1068497116540, 0x70866815dbf52bac),
+    makeFp!(0x2d9420dc5196c01a, 0x852c9b234b09c7df),
+    makeFp!(0x1a491a6cf3399115, 0xca4b831e2e621692),
+    makeFp!(0xb99152aabeebd757, 0xb7fbf514f82e2269),
+    makeFp!(0xb8da2f851dfd594a, 0x597c0e93a246d640),
+    makeFp!(0xf2888c210ef9f1c4, 0x97f929a5d52ab886),
+    makeFp!(0xe6a0ccbc956fc7fb, 0xfa4748aea960d0eb),
+    makeFp!(0xe53d6d96e1ec92a0, 0xc24ed95c3c013bcc),
+    makeFp!(0x6cc6e9129e1679c0, 0x6f825f88648b270c),
 ];
