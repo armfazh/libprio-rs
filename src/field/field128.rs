@@ -3,10 +3,18 @@
 
 //! Finite field arithmetic for `GF((2^62-2^3+1)*2^66+1)`.
 
+use super::{
+    fiat_crypto_fp128::{
+        fp128_add, fp128_from_bytes, fp128_from_montgomery, fp128_mul, fp128_opp, fp128_sub,
+        fp128_to_bytes, fp128_to_montgomery, Fp128MontgomeryDomainFieldElement,
+        Fp128NonMontgomeryDomainFieldElement,
+    },
+    FftFriendlyFieldElement, FieldElement, FieldElementVisitor, FieldElementWithInteger,
+    FieldError,
+};
 use crate::codec::{CodecError, Decode, Encode};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{
-    cmp::min,
     convert::{TryFrom, TryInto},
     fmt::{Debug, Display, Formatter},
     hash::{Hash, Hasher},
@@ -16,56 +24,12 @@ use std::{
 };
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
-use crate::fp::FieldParameters;
-
-use super::{
-    fiat_crypto_fp128::{
-        fp128_add, fp128_from_bytes, fp128_from_montgomery, fp128_mul, fp128_opp, fp128_set_one,
-        fp128_sub, fp128_to_bytes, fp128_to_montgomery, Fp128MontgomeryDomainFieldElement,
-        Fp128NonMontgomeryDomainFieldElement,
-    },
-    FftFriendlyFieldElement, FieldElement, FieldElementVisitor, FieldElementWithInteger,
-    FieldError,
-};
-
-// (todo) replace these constants with Montgomery representation to avoid multiplications.
-const FP128_PARAMS: FieldParameters = FieldParameters {
-    p: 340282366920938462946865773367900766209, // 128-bit prime
-    mu: 18446744073709551615,
-    r2: 403909908237944342183153,
-    g: 107630958476043550189608038630704257141,
-    num_roots: 66,
-    bit_mask: 340282366920938463463374607431768211455,
-    roots: [
-        516508834063867445247,
-        340282366920938462430356939304033320962,
-        129526470195413442198896969089616959958,
-        169031622068548287099117778531474117974,
-        81612939378432101163303892927894236156,
-        122401220764524715189382260548353967708,
-        199453575871863981432000940507837456190,
-        272368408887745135168960576051472383806,
-        24863773656265022616993900367764287617,
-        257882853788779266319541142124730662203,
-        323732363244658673145040701829006542956,
-        57532865270871759635014308631881743007,
-        149571414409418047452773959687184934208,
-        177018931070866797456844925926211239962,
-        268896136799800963964749917185333891349,
-        244556960591856046954834420512544511831,
-        118945432085812380213390062516065622346,
-        202007153998709986841225284843501908420,
-        332677126194796691532164818746739771387,
-        258279638927684931537542082169183965856,
-        148221243758794364405224645520862378432,
-    ],
-};
-
 impl From<Fp128NonMontgomeryDomainFieldElement> for u128 {
     fn from(value: Fp128NonMontgomeryDomainFieldElement) -> Self {
         ((value.0[1] as u128) << 64) | (value.0[0] as u128)
     }
 }
+
 impl From<u128> for Fp128NonMontgomeryDomainFieldElement {
     fn from(val: u128) -> Self {
         Fp128NonMontgomeryDomainFieldElement([val as u64, (val >> 64) as u64])
@@ -104,12 +68,18 @@ impl Hash for Fp128MontgomeryDomainFieldElement {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 
-/// Field128 represents a field element in the prime field GF((2^62-2^3+1)*2^66+1).
+/// Field128 represents an element of the prime field GF((2^62-2^3+1)*2^66+1).
 ///
 /// Internally, elements use Montgomery representation and its
-/// implementation is provided by fiat-crypto, a formally-verified
-/// tool that produces prime field arithmetic.
+/// implementation is provided by fiat-crypto tool that produces
+/// formally-verified prime field arithmetic.
 pub struct Field128(Fp128MontgomeryDomainFieldElement);
+
+macro_rules! makeFp {
+    ($u0:expr,$u1:expr) => {
+        Field128(Fp128MontgomeryDomainFieldElement([$u0, $u1]))
+    };
+}
 
 impl Field128 {
     // fn try_from_bytes(bytes: &[u8], mask: u128) -> Result<Self, FieldError> {
@@ -134,29 +104,32 @@ impl Field128 {
 }
 
 impl Default for Field128 {
+    #[inline]
     fn default() -> Self {
-        Self(Fp128MontgomeryDomainFieldElement(Default::default()))
+        makeFp!(u64::default(), u64::default())
     }
 }
 
 impl ConstantTimeEq for Field128 {
+    #[inline]
     fn ct_eq(&self, rhs: &Self) -> Choice {
         u64::ct_eq(&self.0[0], &rhs.0[0]) & u64::ct_eq(&self.0[1], &rhs.0[1])
     }
 }
 
 impl ConditionallySelectable for Field128 {
-    fn conditional_select(a: &Self, b: &Self, choice: subtle::Choice) -> Self {
-        Self(Fp128MontgomeryDomainFieldElement([
-            u64::conditional_select(&a.0[0], &b.0[0], choice),
-            u64::conditional_select(&a.0[1], &b.0[1], choice),
-        ]))
+    #[inline]
+    fn conditional_select(a: &Self, b: &Self, c: Choice) -> Self {
+        makeFp!(
+            u64::conditional_select(&a.0[0], &b.0[0], c),
+            u64::conditional_select(&a.0[1], &b.0[1], c)
+        )
     }
 }
 
 impl Add for Field128 {
-    type Output = Field128;
-    fn add(self, rhs: Self) -> Self {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self::Output {
         let mut out = Field128::default();
         fp128_add(&mut out.0, &self.0, &rhs.0);
         out
@@ -165,7 +138,7 @@ impl Add for Field128 {
 
 impl Add for &Field128 {
     type Output = Field128;
-    fn add(self, rhs: Self) -> Field128 {
+    fn add(self, rhs: Self) -> Self::Output {
         *self + *rhs
     }
 }
@@ -177,8 +150,8 @@ impl AddAssign for Field128 {
 }
 
 impl Sub for Field128 {
-    type Output = Field128;
-    fn sub(self, rhs: Self) -> Self {
+    type Output = Self;
+    fn sub(self, rhs: Self) -> Self::Output {
         let mut out = Field128::default();
         fp128_sub(&mut out.0, &self.0, &rhs.0);
         out
@@ -187,7 +160,7 @@ impl Sub for Field128 {
 
 impl Sub for &Field128 {
     type Output = Field128;
-    fn sub(self, rhs: Self) -> Field128 {
+    fn sub(self, rhs: Self) -> Self::Output {
         *self - *rhs
     }
 }
@@ -199,8 +172,8 @@ impl SubAssign for Field128 {
 }
 
 impl Mul for Field128 {
-    type Output = Field128;
-    fn mul(self, rhs: Self) -> Self {
+    type Output = Self;
+    fn mul(self, rhs: Self) -> Self::Output {
         let mut out = Field128::default();
         fp128_mul(&mut out.0, &self.0, &rhs.0);
         out
@@ -209,7 +182,7 @@ impl Mul for Field128 {
 
 impl Mul for &Field128 {
     type Output = Field128;
-    fn mul(self, rhs: Self) -> Field128 {
+    fn mul(self, rhs: Self) -> Self::Output {
         *self * *rhs
     }
 }
@@ -221,15 +194,15 @@ impl MulAssign for Field128 {
 }
 
 impl Div for Field128 {
-    type Output = Field128;
-    fn div(self, rhs: Self) -> Self {
+    type Output = Self;
+    fn div(self, rhs: Self) -> Self::Output {
         self.mul(rhs.inv())
     }
 }
 
 impl Div for &Field128 {
     type Output = Field128;
-    fn div(self, rhs: Self) -> Field128 {
+    fn div(self, rhs: Self) -> Self::Output {
         *self / *rhs
     }
 }
@@ -241,8 +214,8 @@ impl DivAssign for Field128 {
 }
 
 impl Neg for Field128 {
-    type Output = Field128;
-    fn neg(self) -> Self {
+    type Output = Self;
+    fn neg(self) -> Self::Output {
         let mut out = Field128::default();
         fp128_opp(&mut out.0, &self.0);
         out
@@ -251,7 +224,7 @@ impl Neg for Field128 {
 
 impl Neg for &Field128 {
     type Output = Field128;
-    fn neg(self) -> Field128 {
+    fn neg(self) -> Self::Output {
         -(*self)
     }
 }
@@ -275,7 +248,7 @@ impl<'a> TryFrom<&'a [u8]> for Field128 {
     type Error = FieldError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, FieldError> {
-        let mut in_bytes = [0u8; Field128::ENCODED_SIZE];
+        let mut in_bytes = [0u8; FIELD128_ENCODED_SIZE];
         in_bytes.copy_from_slice(bytes);
         let mut value = [0u64; 2];
         fp128_from_bytes(&mut value, &in_bytes);
@@ -290,9 +263,9 @@ impl<'a> TryFrom<&'a [u8]> for Field128 {
     }
 }
 
-impl From<Field128> for [u8; Field128::ENCODED_SIZE] {
+impl From<Field128> for [u8; FIELD128_ENCODED_SIZE] {
     fn from(elem: Field128) -> Self {
-        let mut slice = [0; Field128::ENCODED_SIZE];
+        let mut slice = Self::default();
         fp128_to_bytes(
             &mut slice,
             &Into::<Fp128NonMontgomeryDomainFieldElement>::into(elem.0).0,
@@ -303,7 +276,7 @@ impl From<Field128> for [u8; Field128::ENCODED_SIZE] {
 
 impl From<Field128> for Vec<u8> {
     fn from(elem: Field128) -> Self {
-        <[u8; Field128::ENCODED_SIZE]>::from(elem).to_vec()
+        <[u8; FIELD128_ENCODED_SIZE]>::from(elem).to_vec()
     }
 }
 
@@ -321,13 +294,13 @@ impl Debug for Field128 {
 
 impl Serialize for Field128 {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let bytes: [u8; Field128::ENCODED_SIZE] = (*self).into();
+        let bytes: [u8; FIELD128_ENCODED_SIZE] = (*self).into();
         serializer.serialize_bytes(&bytes)
     }
 }
 
 impl<'de> Deserialize<'de> for Field128 {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Field128, D::Error> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         deserializer.deserialize_bytes(FieldElementVisitor {
             phantom: PhantomData,
         })
@@ -336,18 +309,18 @@ impl<'de> Deserialize<'de> for Field128 {
 
 impl Encode for Field128 {
     fn encode(&self, bytes: &mut Vec<u8>) {
-        let slice = <[u8; Field128::ENCODED_SIZE]>::from(*self);
+        let slice = <[u8; FIELD128_ENCODED_SIZE]>::from(*self);
         bytes.extend_from_slice(&slice);
     }
 
     fn encoded_len(&self) -> Option<usize> {
-        Some(Self::ENCODED_SIZE)
+        Some(FIELD128_ENCODED_SIZE)
     }
 }
 
 impl Decode for Field128 {
     fn decode(bytes: &mut Cursor<&[u8]>) -> Result<Self, CodecError> {
-        let mut value = [0u8; Field128::ENCODED_SIZE];
+        let mut value = [0u8; FIELD128_ENCODED_SIZE];
         bytes.read_exact(&mut value)?;
         Field128::try_from(value.as_slice()).map_err(|e| {
             CodecError::Other(Box::new(e) as Box<dyn std::error::Error + 'static + Send + Sync>)
@@ -356,11 +329,11 @@ impl Decode for Field128 {
 }
 
 impl FieldElement for Field128 {
-    const ENCODED_SIZE: usize = 16;
+    const ENCODED_SIZE: usize = FIELD128_ENCODED_SIZE;
 
     #[inline]
     fn inv(&self) -> Self {
-        self.pow(FP128_PARAMS.p - 2)
+        self.pow(FIELD128_PRIME - 2)
     }
 
     fn try_from_random(_bytes: &[u8]) -> Result<Self, FieldError> {
@@ -376,9 +349,9 @@ impl FieldElement for Field128 {
 
     #[inline]
     fn one() -> Self {
-        let mut uno = Self::default();
-        fp128_set_one(&mut uno.0);
-        uno
+        // Since FIELD128_UROOTS[i] is the root-of-unity to the i-th power,
+        // so FIELD128_UROOTS[0] = 1.
+        FIELD128_UROOTS[0]
     }
 }
 
@@ -400,26 +373,74 @@ impl FieldElementWithInteger for Field128 {
     }
 
     fn modulus() -> Self::Integer {
-        FP128_PARAMS.p
+        FIELD128_PRIME
     }
 }
 
 impl FftFriendlyFieldElement for Field128 {
     fn generator() -> Self {
-        // todo: need to avoid multiplication during conversion
-        FP128_PARAMS.g.into()
+        FIELD128_PRIMITIVE_UROOT
     }
 
     fn generator_order() -> Self::Integer {
-        1 << (Self::Integer::try_from(FP128_PARAMS.num_roots).unwrap())
+        1 << FIELD128_NUM_UROOTS
     }
 
     fn root(l: usize) -> Option<Self> {
-        // todo: need to avoid multiplication during conversion
-        if l < min(FP128_PARAMS.roots.len(), FP128_PARAMS.num_roots + 1) {
-            Some(FP128_PARAMS.roots[l].into())
+        if l < FIELD128_UROOTS.len() {
+            Some(FIELD128_UROOTS[l])
         } else {
             None
         }
     }
 }
+
+/// The prime modulus `p=(2^62-2^3+1)*2^66+1`.
+const FIELD128_PRIME: u128 = 340282366920938462946865773367900766209;
+/// Size in bytes used to store a Field128 element.
+const FIELD128_ENCODED_SIZE: usize = 16;
+/// The `2^num_roots`-th -principal root of unity. This element is used to generate the
+/// elements of `roots`.
+///
+/// In sage this is calculated as:
+///   PRIMITIVE_UROOT = GF(p).primitive_element()^(2^62-2^3+1)
+///                   = 7^(2^62-2^3+1)
+///                   = 145091266659756586618791329697897684742
+/// Then, converted to Montgomery domain with R=2^128.
+///   FIELD128_PRIMITIVE_UROOT = PRIMITIVE_UROOT * 2^128
+///                            = 0x50f8f7f554db309cf0111fb98c6b9875
+// Field128(Fp128MontgomeryDomainFieldElement([
+static FIELD128_PRIMITIVE_UROOT: Field128 = makeFp!(0xf0111fb98c6b9875, 0x50f8f7f554db309c);
+/// The number of principal roots of unity in `roots`.
+const FIELD128_NUM_UROOTS: usize = 66;
+/// `FIELD128_UROOTS[l]` is the `2^l`-th principal root of unity, i.e., `roots[l]` has order `2^l` in the
+/// multiplicative group. `roots[0]` is equal to one by definition.
+///
+/// In sage this is calculated as:
+///   PRIMITIVE_UROOT = GF(p).primitive_element()^(2^62-2^3+1)
+///   toMont = lambda x: x*2**128
+///   toHex = lambda x: list(map(hex, ZZ(x).digits(2**64)))
+///   FIELD128_UROOTS = [ toHex(toMont(b**i)) for i in range(0,21) ]
+static FIELD128_UROOTS: [Field128; 20 + 1] = [
+    makeFp!(0xffffffffffffffff, 0x1b),
+    makeFp!(0xf0111fb98c6b9875, 0x50f8f7f554db309c),
+    makeFp!(0x336824df50a3e9de, 0x1f70898af1701972),
+    makeFp!(0x52084516b37d72db, 0x8bfac52aac2c36e9),
+    makeFp!(0x8b45f6e90b16542d, 0xd9b5db39af523ffb),
+    makeFp!(0xec875e5c00353b61, 0x1bd0dcb83d7ea68a),
+    makeFp!(0x4444393ff6c7e30c, 0xa71f88583de4e579),
+    makeFp!(0x259ae62476ae0522, 0xc38d70695f91561e),
+    makeFp!(0x3c5dd0cda73814c2, 0x1a29ef0cd721372e),
+    makeFp!(0xf5df5ca55e4b2158, 0xa8f54fcb7822853f),
+    makeFp!(0x2b5a0f0e88eda7fa, 0x327e63c2205a06ae),
+    makeFp!(0x5db505eaaab5261d, 0xdb7a4c65816d8488),
+    makeFp!(0x64ed61974e585c72, 0x7dab815089a2a138),
+    makeFp!(0x6cf557b0cb3a2f3b, 0x3cff2f56bf6877d7),
+    makeFp!(0x2b809b5aeb580d92, 0xba46c3968632b291),
+    makeFp!(0x20fd8b7d3df3a711, 0x2bb109cbdaafa592),
+    makeFp!(0x9e4fc0f4006111e3, 0x54879fe858345e92),
+    makeFp!(0xdaadd17a3e528054, 0x5a99e1f583619898),
+    makeFp!(0x15643d3043bfe8d6, 0x88a9b82ef788b332),
+    makeFp!(0xfd5ce8b146115bc7, 0x2bed551a665599c8),
+    makeFp!(0x996ef60497805c22, 0x853e4df8bbb45538),
+];

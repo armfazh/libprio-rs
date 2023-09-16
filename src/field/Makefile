@@ -1,6 +1,6 @@
 FIAT_PATH=fiat-crypto
 FIAT_BINARY=word_by_word_montgomery
-OPERS=add sub mul opp from_montgomery to_montgomery to_bytes from_bytes one
+OPERS=add sub mul opp from_montgomery to_montgomery to_bytes from_bytes
 
 #Flags to check with tests:
 # --no-primitives
