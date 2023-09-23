@@ -14,11 +14,14 @@
 //!
 //! [vdaf]: https://datatracker.ietf.org/doc/draft-irtf-cfrg-vdaf/05/
 
+// https://github.com/rust-lang/rust/issues/85532
+// #![feature(bigint_helper_methods)]
+
 pub mod benchmarked;
 pub mod codec;
 #[cfg(feature = "experimental")]
 pub mod dp;
-mod fft;
+pub mod fft;
 pub mod field;
 pub mod flp;
 mod fp;

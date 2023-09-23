@@ -7,7 +7,6 @@ OPERS=add sub mul opp from_montgomery to_montgomery to_bytes from_bytes
 # --use-value-barrier
 # --relax-primitive-carry-to-bitwidth
 
-
 all: f128
 
 f32: PRIME=4293918721
@@ -26,6 +25,7 @@ fp128.c:
 		Fp128 64 ${PRIME} \
 		${OPERS}
 
+export PRIMITIVES
 fiat_crypto_fp%.rs:
 	${FIAT_PATH}/${FIAT_BINARY}           \
 		--output $@                       \
@@ -37,6 +37,8 @@ fiat_crypto_fp%.rs:
 		--private-function-case camelCase \
 		--public-type-case UpperCamelCase \
 		fp$* 64 ${PRIME} ${OPERS}
+	# cat ./primitives.rs >> $@
 
 clean:
 	rm -f fiat_crypto_fp128.rs
+

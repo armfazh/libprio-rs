@@ -11,7 +11,7 @@
 use crate::prng::{Prng, PrngError};
 use crate::{
     codec::{CodecError, Decode, Encode},
-    fp::{FP32, FP64},
+    fp::{FP128, FP32, FP64},
 };
 use serde::{
     de::{DeserializeOwned, Visitor},
@@ -31,7 +31,7 @@ use std::{
 };
 use subtle::{Choice, ConditionallyNegatable, ConditionallySelectable, ConstantTimeEq};
 
-mod fiat_crypto_fp128;
+pub mod fiat_crypto_fp128;
 mod field128;
 pub use field128::Field128;
 
@@ -737,13 +737,13 @@ make_field!(
     8,
 );
 
-// make_field!(
-//     /// `GF(340282366920938462946865773367900766209)`, a 128-bit field.
-//     Field128,
-//     u128,
-//     FP128,
-//     16,
-// );
+make_field!(
+    /// `GF(340282366920938462946865773367900766209)`, a 128-bit field.
+    Field128b,
+    u128,
+    FP128,
+    16,
+);
 
 /// Merge two vectors of fields by summing other_vector into accumulator.
 ///

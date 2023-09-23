@@ -19,8 +19,11 @@ use prio::dp::distributions::DiscreteGaussian;
 use prio::vdaf::prio2::Prio2;
 use prio::{
     benchmarked::*,
-    field::{random_vector, Field128 as F, FieldElement},
-    flp::gadgets::Mul,
+    field::fiat_crypto_fp128::Fp128MontgomeryDomainFieldElement,
+    field::{
+        fiat_crypto_fp128::fp128_mul, random_vector, Field128 as F, Field128b as Fb, FieldElement,
+    },
+    flp::{gadgets::Mul, Gadget},
     vdaf::{prio3::Prio3, Aggregator, Client},
 };
 #[cfg(feature = "experimental")]
@@ -77,6 +80,76 @@ pub fn dp_noise(c: &mut Criterion) {
             BenchmarkId::new("discrete_gaussian", std.to_f64().unwrap_or(f64::INFINITY)),
             |b| b.iter(|| sampler.sample(&mut rng)),
         );
+    }
+    group.finish();
+}
+
+/// The asymptotic cost of polynomial multiplication is `O(n log n)` using FFT and `O(n^2)` using
+/// the naive method. This benchmark demonstrates that the latter has better concrete performance
+/// for small polynomials. The result is used to pick the `FFT_THRESHOLD` constant in
+/// `src/flp/gadgets.rs`.
+fn field_fp128(c: &mut Criterion) {
+    let test_sizes = [1_usize, 30, 60, 90, 120, 150];
+
+    let mut group = c.benchmark_group("fp128");
+    for size in test_sizes {
+        group.bench_with_input(BenchmarkId::new("fft_rust", size), &size, |b, size| {
+            let m = (size + 1).next_power_of_two();
+            let mut g: Mul<Fb> = Mul::new(*size);
+            let mut outp = vec![Fb::zero(); 2 * m];
+            let inp = vec![random_vector::<Fb>(m).unwrap(); 2];
+
+            b.iter(|| {
+                benchmarked_gadget_mul_call_poly_fft::<Fb>(&mut g, &mut outp, &inp).unwrap();
+            })
+        });
+        group.bench_with_input(BenchmarkId::new("fft_fiat", size), &size, |b, size| {
+            let m = (size + 1).next_power_of_two();
+            let mut g: Mul<F> = Mul::new(*size);
+            let mut outp = vec![F::zero(); 2 * m];
+            let inp = vec![random_vector(m).unwrap(); 2];
+
+            b.iter(|| {
+                benchmarked_gadget_mul_call_poly_fft(&mut g, &mut outp, &inp).unwrap();
+            })
+        });
+        group.bench_function(BenchmarkId::new("mul_rust", size), |b| {
+            let aa = Fb::from(0x31287368279618343324327403252342);
+            let bb = Fb::from(0x11449304239075895488327593583849);
+            let mut cc = Fb::from(0);
+
+            b.iter(|| cc = aa * bb)
+        });
+        group.bench_function(BenchmarkId::new("mul_fiat", size), |b| {
+            let aa = Fp128MontgomeryDomainFieldElement([0x4791043790549403, 0x4740391043790549]);
+            let bb = Fp128MontgomeryDomainFieldElement([0x4235034859345498, 0x4249835034859345]);
+            let mut cc = Fp128MontgomeryDomainFieldElement([0, 0]);
+
+            b.iter(|| fp128_mul(&mut cc, &aa, &bb))
+        });
+
+        group.bench_function(BenchmarkId::new("mulv_rust", size), |b| {
+            let aa = random_vector::<Fb>(size).unwrap();
+            let bb = random_vector::<Fb>(size).unwrap();
+            let mut cc = random_vector::<Fb>(size).unwrap();
+
+            b.iter(|| {
+                for i in 0..size {
+                    cc[i] = aa[i] * bb[i];
+                }
+            })
+        });
+        group.bench_function(BenchmarkId::new("mulv_fiat", size), |b| {
+            let aa = random_vector::<F>(size).unwrap();
+            let bb = random_vector::<F>(size).unwrap();
+            let mut cc = random_vector::<F>(size).unwrap();
+
+            b.iter(|| {
+                for i in 0..size {
+                    cc[i] = aa[i] * bb[i];
+                }
+            })
+        });
     }
     group.finish();
 }
@@ -865,12 +938,31 @@ fn poplar1_generate_zipf_distributed_batch(
 }
 
 #[cfg(all(feature = "prio2", feature = "experimental"))]
-criterion_group!(benches, poplar1, prio3, prio2, poly_mul, prng, idpf, dp_noise);
+criterion_group!(
+    benches,
+    poplar1,
+    prio3,
+    prio2,
+    field_fp128,
+    poly_mul,
+    prng,
+    idpf,
+    dp_noise
+);
 #[cfg(all(not(feature = "prio2"), feature = "experimental"))]
-criterion_group!(benches, poplar1, prio3, poly_mul, prng, idpf, dp_noise);
+criterion_group!(
+    benches,
+    poplar1,
+    prio3,
+    field_fp128,
+    poly_mul,
+    prng,
+    idpf,
+    dp_noise
+);
 #[cfg(all(feature = "prio2", not(feature = "experimental")))]
-criterion_group!(benches, prio3, prio2, prng, poly_mul);
+criterion_group!(benches, prio3, prio2, prng, field_fp128, poly_mul);
 #[cfg(all(not(feature = "prio2"), not(feature = "experimental")))]
-criterion_group!(benches, prio3, prng, poly_mul);
+criterion_group!(benches, prio3, prng, field_fp128, poly_mul);
 
 criterion_main!(benches);

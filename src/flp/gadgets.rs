@@ -55,7 +55,7 @@ impl<F: FftFriendlyFieldElement> Mul<F> {
     }
 
     // Multiply input polynomials using FFT.
-    pub(crate) fn call_poly_fft(&mut self, outp: &mut [F], inp: &[Vec<F>]) -> Result<(), FlpError> {
+    pub fn call_poly_fft(&mut self, outp: &mut [F], inp: &[Vec<F>]) -> Result<(), FlpError> {
         let n = self.n;
         let mut buf = vec![F::zero(); n];
 
