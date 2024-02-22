@@ -864,8 +864,57 @@ fn poplar1_generate_zipf_distributed_batch(
     (samples, prefix_tree)
 }
 
+/// Benchmark VIDPF performance.
 #[cfg(feature = "experimental")]
-criterion_group!(benches, poplar1, prio3, prio2, poly_mul, prng, idpf, dp_noise);
+fn vidpf(c: &mut Criterion) {
+    use prio::{
+        vdaf::xof::XofFixedKeyAes128,
+        vidpf::{self, PrngFromXof, Weight},
+    };
+
+    let test_sizes = [8usize, 8 * 16, 8 * 256];
+
+    let mut group = c.benchmark_group("vidpf_gen");
+    for size in test_sizes.iter() {
+        group.throughput(Throughput::Bytes(*size as u64 / 8));
+        group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
+            let bits = iter::repeat_with(random).take(size).collect::<Vec<bool>>();
+            let alpha = IdpfInput::from_bools(&bits).to_bytes();
+            let beta = Weight([Field255::one(), Field255::one()]);
+            let prng = PrngFromXof::<16, XofFixedKeyAes128>::default();
+            let binder = "binder".as_bytes().to_vec();
+            let vidpf = vidpf::new_vidpf(128, prng, binder);
+
+            b.iter(|| {
+                vidpf.gen(&alpha, &beta).unwrap();
+            });
+        });
+    }
+    group.finish();
+
+    let mut group = c.benchmark_group("vidpf_eval");
+    for size in test_sizes.iter() {
+        group.throughput(Throughput::Bytes(*size as u64 / 8));
+        group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
+            let bits = iter::repeat_with(random).take(size).collect::<Vec<bool>>();
+            let alpha = IdpfInput::from_bools(&bits).to_bytes();
+            let beta = Weight([Field255::one(), Field255::one()]);
+            let prng = PrngFromXof::<16, XofFixedKeyAes128>::default();
+            let binder = "binder".as_bytes().to_vec();
+
+            let vidpf = vidpf::new_vidpf(128, prng, binder);
+            let (public_share, key0, _) = vidpf.gen(&alpha, &beta).unwrap();
+
+            b.iter(|| {
+                vidpf.eval(&alpha, &key0, &public_share);
+            });
+        });
+    }
+    group.finish();
+}
+
+#[cfg(feature = "experimental")]
+criterion_group!(benches, poplar1, prio3, prio2, poly_mul, prng, idpf, dp_noise, vidpf);
 #[cfg(not(feature = "experimental"))]
 criterion_group!(benches, prio3, prng, poly_mul);
 
