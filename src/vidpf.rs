@@ -308,13 +308,13 @@ where
 /// Fill populates a struct from a PRNG source.
 pub trait Fill {
     /// fill reads as many bytes as needed from a PRNG source to fill the [Self] struct.
-    fn fill(&mut self, r: &mut impl RngCore);
+    fn fill(&mut self, r: &mut Box<dyn RngCore>);
 }
 
 /// GetPRG
 pub trait GetPRNG {
     /// new_prng
-    fn new_prng(&self, seed: &Seed, dst: &[u8], binder: &[u8]) -> impl RngCore;
+    fn new_prng(&self, seed: &Seed, dst: &[u8], binder: &[u8]) -> Box<dyn RngCore>;
 }
 
 /// PrngFromXof is a helper to create a PRNG from any [crate::vdaf::xof::Xof] implementer.
@@ -326,10 +326,13 @@ impl<const SEED_SIZE: usize, X: Xof<SEED_SIZE>> Default for PrngFromXof<SEED_SIZ
     }
 }
 
-impl<const SEED_SIZE: usize, X: Xof<SEED_SIZE>> GetPRNG for PrngFromXof<SEED_SIZE, X> {
-    fn new_prng(&self, seed: &Seed, dst: &[u8], binder: &[u8]) -> impl RngCore {
+impl<const SEED_SIZE: usize, X: Xof<SEED_SIZE>> GetPRNG for PrngFromXof<SEED_SIZE, X>
+where
+    <X as Xof<SEED_SIZE>>::SeedStream: 'static,
+{
+    fn new_prng(&self, seed: &Seed, dst: &[u8], binder: &[u8]) -> Box<dyn RngCore> {
         let xof_seed = XofSeed::<SEED_SIZE>::get_decoded(&seed.0).unwrap();
-        X::seed_stream(&xof_seed, dst, binder)
+        Box::new(X::seed_stream(&xof_seed, dst, binder))
     }
 }
 
@@ -362,7 +365,7 @@ impl Proof {
 }
 
 impl Fill for Proof {
-    fn fill(&mut self, r: &mut impl RngCore) {
+    fn fill(&mut self, r: &mut Box<dyn RngCore>) {
         r.fill_bytes(&mut self.0)
     }
 }
@@ -434,7 +437,7 @@ impl From<&Key> for ControlBit {
 }
 
 impl Fill for ControlBit {
-    fn fill(&mut self, r: &mut impl RngCore) {
+    fn fill(&mut self, r: &mut Box<dyn RngCore>) {
         let mut b = [0u8; 1];
         r.fill_bytes(&mut b);
         *self = ControlBit::from(b[0] & 0x1)
@@ -521,7 +524,7 @@ impl From<&Key> for Seed {
 }
 
 impl Fill for Seed {
-    fn fill(&mut self, r: &mut impl RngCore) {
+    fn fill(&mut self, r: &mut Box<(dyn RngCore + 'static)>) {
         r.fill_bytes(&mut self.0)
     }
 }
@@ -550,7 +553,7 @@ impl<F: FieldElement, const N: usize> Codomain for Weight<F, N> {
 }
 
 impl<F: FieldElement, const N: usize> Fill for Weight<F, N> {
-    fn fill(&mut self, r: &mut impl RngCore) {
+    fn fill(&mut self, r: &mut Box<dyn RngCore>) {
         let mut bytes = vec![0u8; F::ENCODED_SIZE];
         self.0.iter_mut().for_each(|i| loop {
             r.fill_bytes(&mut bytes);
