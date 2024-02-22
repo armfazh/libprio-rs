@@ -17,9 +17,10 @@ use std::{
 use rand_core::RngCore;
 use subtle::{Choice, ConditionallyNegatable, ConditionallySelectable};
 
-use super::xof::Xof;
 use crate::{
-    codec::Decode, field::FieldElement, field::FieldElementExt, vdaf::xof::Seed as XofSeed,
+    codec::Decode,
+    field::{FieldElement, FieldElementExt},
+    vdaf::xof::{Seed as XofSeed, Xof},
 };
 
 /// Creates a new instance of a VIDPF.
@@ -605,10 +606,8 @@ impl<F: FieldElement, const N: usize> Sub for &Weight<F, N> {
 mod tests {
     use crate::{
         field::Field128,
-        vdaf::{
-            vidpf::{new_vidpf, Codomain, PrngFromXof, VidpfInstance, Weight},
-            xof::XofTurboShake128,
-        },
+        vdaf::xof::XofTurboShake128,
+        vidpf::{new_vidpf, Codomain, PrngFromXof, VidpfInstance, Weight},
     };
 
     fn setup() -> VidpfInstance<PrngFromXof<16, XofTurboShake128>, Weight<Field128, 3>> {

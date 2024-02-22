@@ -867,9 +867,9 @@ fn poplar1_generate_zipf_distributed_batch(
 /// Benchmark VIDPF performance.
 #[cfg(feature = "experimental")]
 fn vidpf(c: &mut Criterion) {
-    use prio::vdaf::{
+    use prio::{
+        vdaf::xof::XofFixedKeyAes128,
         vidpf::{self, PrngFromXof, Weight},
-        xof::XofFixedKeyAes128,
     };
 
     let test_sizes = [8usize, 8 * 16, 8 * 256];

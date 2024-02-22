@@ -33,3 +33,4 @@ mod polynomial;
 mod prng;
 pub mod topology;
 pub mod vdaf;
+pub mod vidpf;
