@@ -7,79 +7,68 @@ use std::fmt::{Debug, Display};
 
 use bitvec::{order::Lsb0, slice::BitSlice};
 
-/// Status
-#[derive(Debug)]
-pub enum Status {
-    /// Ok
-    Ok,
-    /// NodeAlreadyExists
-    NodeAlreadyExists,
-}
-
 /// TT
 pub trait TT: Debug + Display + Default {
-    /// index
-    fn index(&self) -> u8;
+    // index
+    // fn index(&self) -> u8;
 }
 
 /// Node
 #[derive(Default, Debug)]
-pub struct Node<T: TT> {
+struct Node<T: TT> {
     payload: T,
-    level: usize,
+    // level: usize,
     left: Option<Box<Node<T>>>,
     righ: Option<Box<Node<T>>>,
 }
 
 impl<T: TT> Node<T> {
-    fn new(payload: T, level: usize) -> Option<Box<Self>> {
-        Some(Box::new(Self {
+    fn new(payload: T) -> Self {
+        Self {
             payload,
-            level,
             left: None,
             righ: None,
-        }))
+        }
+    }
+
+    fn new_child(payload: T) -> Option<Box<Self>> {
+        Some(Box::new(Node::new(payload)))
     }
 
     /// insert_bitvec
-    fn insert_bitvec(&mut self, py: T, index: &BitSlice<u8, Lsb0>) -> Status {
+    fn insert_bitvec(&mut self, payload: T, index: &BitSlice<u8, Lsb0>) {
         if let Some(bit) = index.first() {
             if bit == false {
                 match &mut self.left {
-                    None => self.left = Node::new(py, self.level + 1),
-                    Some(n) => return n.insert_bitvec(py, &index[1..]),
+                    None => self.left = Self::new_child(payload),
+                    Some(n) => n.insert_bitvec(payload, &index[1..]),
                 }
             } else {
                 match &mut self.righ {
-                    None => self.righ = Node::new(py, self.level + 1),
-                    Some(n) => return n.insert_bitvec(py, &index[1..]),
+                    None => self.righ = Self::new_child(payload),
+                    Some(n) => n.insert_bitvec(payload, &index[1..]),
                 };
             }
         }
-        return Status::Ok;
     }
 
     /// insert
-    fn insert(&mut self, py: T) -> Status {
-        let node_index = self.payload.index();
-        let py_index = py.index();
+    // fn insert(&mut self, py: T) {
+    //     let node_index = self.payload.index();
+    //     let py_index = py.index();
 
-        if py_index < node_index {
-            match &mut self.left {
-                None => self.left = Node::new(py, self.level + 1),
-                Some(n) => return n.insert(py),
-            }
-        } else if py_index > node_index {
-            match &mut self.righ {
-                None => self.righ = Node::new(py, self.level + 1),
-                Some(n) => return n.insert(py),
-            };
-        } else {
-            return Status::NodeAlreadyExists;
-        }
-
-        return Status::Ok;
-    }
+    //     if py_index < node_index {
+    //         match &mut self.left {
+    //             None => self.left = Node::new(py, self.level + 1),
+    //             Some(n) => return n.insert(py),
+    //         }
+    //     } else if py_index > node_index {
+    //         match &mut self.righ {
+    //             None => self.righ = Node::new(py, self.level + 1),
+    //             Some(n) => return n.insert(py),
+    //         };
+    //     }
+    // }
 
     /// print_in_order (recursive)
     fn print_in_order(&self) -> String {
@@ -100,7 +89,7 @@ impl<T: TT> Node<T> {
 
 impl<T: TT> Display for Node<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let prefix = "  ".repeat(self.level);
+        let prefix = "  ".repeat(2);
         write!(f, "{}└node: {}\n", prefix, self.payload)?;
         match &self.left {
             None => write!(f, "{}└left: <None>\n", prefix)?,
@@ -115,46 +104,42 @@ impl<T: TT> Display for Node<T> {
     }
 }
 
-/// Root
+/// Tree
 #[derive(Default, Debug)]
-pub struct Root<T: TT>(Option<Box<Node<T>>>);
+pub struct Tree<T: TT> {
+    root: Node<T>,
+}
 
-impl<T: TT> Display for Root<T> {
+impl<T: TT> Display for Tree<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.0 {
-            None => write!(f, "■  <empty-root>"),
-            Some(n) => write!(f, "■\n{}", n),
-        }
+        write!(f, "■\n{}", self.root)
     }
 }
 
-impl<T: TT> Root<T> {
-    /// insert_bitvec
-    pub fn insert_bitvec(&mut self, py: T, index: &BitSlice<u8, Lsb0>) -> Status {
-        if self.0.is_none() {
-            self.0 = Node::new(T::default(), 0);
+impl<T: TT> Tree<T> {
+    /// new
+    pub fn new(root_payload: T) -> Self {
+        Self {
+            root: Node::new(root_payload),
         }
-        if let Some(x) = &mut self.0 {
-            return x.insert_bitvec(py, index);
-        }
+    }
 
-        Status::Ok
+    /// insert_bitvec
+    pub fn insert_bitvec(&mut self, payload: T, index: &BitSlice<u8, Lsb0>) {
+        self.root.insert_bitvec(payload, index)
     }
+
     /// insert
-    pub fn insert(&mut self, py: T) -> Status {
-        match &mut self.0 {
-            None => self.0 = Node::new(py, 0),
-            Some(node) => return node.insert(py),
-        }
-        return Status::Ok;
-    }
+    // pub fn insert(&mut self, py: T) {
+    //     match &mut self.0 {
+    //         None => self.0 = Node::new(py, 0),
+    //         Some(node) => node.insert(py),
+    //     }
+    // }
+
     /// in_order
     pub fn in_order(&self) -> String {
-        let mut out = String::new();
-        if let Some(n) = &self.0 {
-            out += &n.print_in_order();
-        }
-        out
+        self.root.print_in_order()
     }
 }
 
@@ -174,9 +159,9 @@ impl MyData {
 }
 
 impl TT for MyData {
-    fn index(&self) -> u8 {
-        self.data2
-    }
+    // fn index(&self) -> u8 {
+    //     self.data2
+    // }
 }
 
 impl Display for MyData {
@@ -189,17 +174,18 @@ impl Display for MyData {
 mod test {
     use bitvec::{bitvec, prelude::Lsb0, slice::BitSlice, view::BitView};
 
-    use crate::bt::{MyData, Root, VERSION};
+    use crate::bt::{MyData, Tree, VERSION};
 
     #[test]
     fn devel() {
+        let root = MyData::new(99);
+        let tree = Tree::new(root);
         let mut my = Vec::new();
         for i in 0..32 {
             my.push(MyData::new(i as u8));
         }
 
-        let mut root = Root::<MyData>::default();
-        println!("{}", root);
+        println!("{}", tree);
 
         let index = bitvec![0, 1, 1, 0, 1, 0, 1, 1];
         println!(">index {}", index);
@@ -216,30 +202,24 @@ mod test {
         // s = root.insert(my[14].clone());
         // println!("{:?} {}", s, root);
 
-        for i in 0..31 {
-            let j = (3 * i + 18) % 31;
-            s = root.insert(my[j].clone());
-            println!("i:{} {:?}", j, s);
-        }
-        println!("> {}", root.in_order());
+        // for i in 0..31 {
+        //     let j = (3 * i + 18) % 31;
+        //     s = root.insert(my[j].clone());
+        //     println!("i:{} {:?}", j, s);
+        // }
+        // println!("> {}", root.in_order());
 
-        let mut root2 = Root::<MyData>::default();
+        let mut tree2 = Tree::<MyData>::default();
         for i in 0..3 {
             let j: usize = (3 * i) % 31;
             let j8 = j as u8;
             let index: &BitSlice<u8, _> = j8.view_bits();
-            s = root2.insert_bitvec(my[j].clone(), index);
+            s = tree2.insert_bitvec(my[j].clone(), index);
             println!("j:{} bits:{} {:?}", j, index, s);
         }
-        println!("> {}", root2);
+        println!("> {}", tree2);
 
         assert!(true);
-    }
-
-    #[test]
-    fn root_empty() {
-        let root = Root::<MyData>::default();
-        assert!(root.0.is_none());
     }
 
     //
