@@ -5,7 +5,10 @@
 
 use std::fmt::{Debug, Display};
 
-use bitvec::{order::Lsb0, slice::BitSlice};
+use bitvec::{
+    order::Lsb0,
+    slice::{BitSlice, Iter},
+};
 
 /// TT
 pub trait TT: Debug + Display + Default {
@@ -17,22 +20,59 @@ pub trait TT: Debug + Display + Default {
 #[derive(Default, Debug)]
 struct Node<T: TT> {
     payload: T,
-    // level: usize,
+    level: usize,
     left: Option<Box<Node<T>>>,
     righ: Option<Box<Node<T>>>,
 }
 
+#[derive(Debug)]
+struct IterLeft<'a, T: TT> {
+    next: Option<&'a Node<T>>,
+}
+
+impl<'a, T: TT> IterLeft<'a, T> {
+    fn sig(&mut self) -> Option<&'a T> {
+        self.next.map(|node| {
+            self.next = node.left.as_deref();
+            &node.payload
+        })
+    }
+}
+
+#[derive(Debug)]
+struct IterMutLeft<'a, T: TT> {
+    next: Option<&'a mut Node<T>>,
+}
+
+impl<'a, T: TT> IterMutLeft<'a, T> {
+    fn sig(&mut self) -> Option<&'a mut T> {
+        self.next.take().map(|node| {
+            self.next = node.left.as_deref_mut();
+            &mut node.payload
+        })
+    }
+}
+
 impl<T: TT> Node<T> {
-    fn new(payload: T) -> Self {
+    fn iter(&self) -> IterLeft<'_, T> {
+        IterLeft { next: Some(self) }
+    }
+
+    fn iter_mut(&mut self) -> IterMutLeft<'_, T> {
+        IterMutLeft { next: Some(self) }
+    }
+
+    fn new(payload: T, level: usize) -> Self {
         Self {
             payload,
+            level,
             left: None,
             righ: None,
         }
     }
 
-    fn new_child(payload: T) -> Option<Box<Self>> {
-        Some(Box::new(Node::new(payload)))
+    fn new_child(payload: T, level: usize) -> Option<Box<Self>> {
+        Some(Box::new(Node::new(payload, level)))
     }
 
     /// insert_bitvec
@@ -40,12 +80,12 @@ impl<T: TT> Node<T> {
         if let Some(bit) = index.first() {
             if bit == false {
                 match &mut self.left {
-                    None => self.left = Self::new_child(payload),
+                    None => self.left = Self::new_child(payload, self.level + 1),
                     Some(n) => n.insert_bitvec(payload, &index[1..]),
                 }
             } else {
                 match &mut self.righ {
-                    None => self.righ = Self::new_child(payload),
+                    None => self.righ = Self::new_child(payload, self.level + 1),
                     Some(n) => n.insert_bitvec(payload, &index[1..]),
                 };
             }
@@ -73,15 +113,36 @@ impl<T: TT> Node<T> {
     /// print_in_order (recursive)
     fn print_in_order(&self) -> String {
         let mut out = String::new();
-        if let Some(n) = &self.left {
-            out += &n.print_in_order();
-        }
+
+        out += &match &self.left {
+            None => String::from("X "),
+            Some(n) => n.print_in_order(),
+        };
 
         out += &format!("{} ", self.payload);
 
-        if let Some(n) = &self.righ {
-            out += &n.print_in_order();
-        }
+        out += &match &self.righ {
+            None => String::from("X "),
+            Some(n) => n.print_in_order(),
+        };
+
+        out
+    }
+
+    /// print_pre_order (recursive)
+    fn print_pre_order(&self) -> String {
+        let mut out = String::new();
+        out += &format!("{} ", self.payload);
+
+        out += &match &self.left {
+            None => String::from("L "),
+            Some(n) => n.print_pre_order(),
+        };
+
+        out += &match &self.righ {
+            None => String::from("R "),
+            Some(n) => n.print_pre_order(),
+        };
 
         out
     }
@@ -89,7 +150,7 @@ impl<T: TT> Node<T> {
 
 impl<T: TT> Display for Node<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let prefix = "  ".repeat(2);
+        let prefix = "  ".repeat(self.level);
         write!(f, "{}└node: {}\n", prefix, self.payload)?;
         match &self.left {
             None => write!(f, "{}└left: <None>\n", prefix)?,
@@ -112,7 +173,7 @@ pub struct Tree<T: TT> {
 
 impl<T: TT> Display for Tree<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "■\n{}", self.root)
+        write!(f, "\n■\n{}", self.root)
     }
 }
 
@@ -120,7 +181,7 @@ impl<T: TT> Tree<T> {
     /// new
     pub fn new(root_payload: T) -> Self {
         Self {
-            root: Node::new(root_payload),
+            root: Node::new(root_payload, 0),
         }
     }
 
@@ -140,6 +201,10 @@ impl<T: TT> Tree<T> {
     /// in_order
     pub fn in_order(&self) -> String {
         self.root.print_in_order()
+    }
+    /// in_order
+    pub fn pre_order(&self) -> String {
+        self.root.print_pre_order()
     }
 }
 
@@ -166,7 +231,7 @@ impl TT for MyData {
 
 impl Display for MyData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:08b}", self.data2)
+        write!(f, "{}", self.data2)
     }
 }
 
@@ -209,16 +274,33 @@ mod test {
         // }
         // println!("> {}", root.in_order());
 
-        let mut tree2 = Tree::<MyData>::default();
+        let root = MyData::new(99);
+        let mut tree2 = Tree::<MyData>::new(root);
         for i in 0..3 {
-            let j: usize = (3 * i) % 31;
+            let j: usize = (3 * i + 4) % 31;
             let j8 = j as u8;
             let index: &BitSlice<u8, _> = j8.view_bits();
             s = tree2.insert_bitvec(my[j].clone(), index);
             println!("j:{} bits:{} {:?}", j, index, s);
         }
         println!("> {}", tree2);
+        println!("> {}", tree2.pre_order());
 
+        let mut it = tree2.root.iter();
+        println!("> {:?}", it);
+        println!("> {:?}", it.sig());
+        println!("> {:?}", it.sig());
+        println!("> {:?}", it.sig());
+        println!("> {:?}", it.sig());
+
+        let mut itm = tree2.root.iter_mut();
+        println!("> {:?}", itm);
+        println!("> {:?}", itm.sig());
+        *itm.sig().unwrap() = MyData::new(77);
+        println!("> {:?}", itm.sig());
+        println!("> {:?}", itm.sig());
+
+        println!("> {}", tree2);
         assert!(true);
     }
 
