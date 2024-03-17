@@ -5,13 +5,10 @@
 
 use std::fmt::{Debug, Display};
 
-use bitvec::{
-    order::Lsb0,
-    slice::{BitSlice, Iter},
-};
+use bitvec::{order::Lsb0, slice::BitSlice};
 
 /// TT
-pub trait TT: Debug + Display + Default {
+pub trait TT: Debug + Display + Default + Copy {
     // index
     // fn index(&self) -> u8;
 }
@@ -75,7 +72,34 @@ impl<T: TT> Node<T> {
         Some(Box::new(Node::new(payload, level)))
     }
 
-    /// insert_bitvec
+    /// insert_bitvec (iterative)
+    pub fn insert_bitvec_iter(&mut self, payload: T, input: &BitSlice<u8, Lsb0>) {
+        let mut itm = Some(self);
+
+        for bit in input.iter() {
+            let node = itm.take().unwrap();
+            match *bit {
+                false => {
+                    if node.left.is_none() {
+                        node.left = Self::new_child(payload, node.level + 1);
+                        break;
+                    } else {
+                        itm = node.left.as_deref_mut();
+                    }
+                }
+                true => {
+                    if node.righ.is_none() {
+                        node.righ = Self::new_child(payload, node.level + 1);
+                        break;
+                    } else {
+                        itm = node.righ.as_deref_mut();
+                    }
+                }
+            }
+        }
+    }
+
+    /// insert_bitvec (recursive)
     fn insert_bitvec(&mut self, payload: T, index: &BitSlice<u8, Lsb0>) {
         if let Some(bit) = index.first() {
             if bit == false {
@@ -91,24 +115,6 @@ impl<T: TT> Node<T> {
             }
         }
     }
-
-    /// insert
-    // fn insert(&mut self, py: T) {
-    //     let node_index = self.payload.index();
-    //     let py_index = py.index();
-
-    //     if py_index < node_index {
-    //         match &mut self.left {
-    //             None => self.left = Node::new(py, self.level + 1),
-    //             Some(n) => return n.insert(py),
-    //         }
-    //     } else if py_index > node_index {
-    //         match &mut self.righ {
-    //             None => self.righ = Node::new(py, self.level + 1),
-    //             Some(n) => return n.insert(py),
-    //         };
-    //     }
-    // }
 
     /// print_in_order (recursive)
     fn print_in_order(&self) -> String {
@@ -151,13 +157,13 @@ impl<T: TT> Node<T> {
 impl<T: TT> Display for Node<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let prefix = "  ".repeat(self.level);
-        write!(f, "{}└node: {}\n", prefix, self.payload)?;
+        writeln!(f, "{}└node: {}", prefix, self.payload)?;
         match &self.left {
-            None => write!(f, "{}└left: <None>\n", prefix)?,
+            None => writeln!(f, "{}└left: <None>", prefix)?,
             Some(n) => write!(f, "{}└left:\n{}", prefix, &n)?,
         };
         match &self.righ {
-            None => write!(f, "{}└righ: <None>\n", prefix)?,
+            None => writeln!(f, "{}└righ: <None>", prefix)?,
             Some(n) => write!(f, "{}└righ:\n{}", prefix, &n)?,
         };
 
@@ -190,14 +196,6 @@ impl<T: TT> Tree<T> {
         self.root.insert_bitvec(payload, index)
     }
 
-    /// insert
-    // pub fn insert(&mut self, py: T) {
-    //     match &mut self.0 {
-    //         None => self.0 = Node::new(py, 0),
-    //         Some(node) => node.insert(py),
-    //     }
-    // }
-
     /// in_order
     pub fn in_order(&self) -> String {
         self.root.print_in_order()
@@ -209,7 +207,7 @@ impl<T: TT> Tree<T> {
 }
 
 /// MyData
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, Copy)]
 pub struct MyData {
     // data1: String,
     data2: u8,
@@ -223,11 +221,7 @@ impl MyData {
     }
 }
 
-impl TT for MyData {
-    // fn index(&self) -> u8 {
-    //     self.data2
-    // }
-}
+impl TT for MyData {}
 
 impl Display for MyData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -276,7 +270,7 @@ mod test {
 
         let root = MyData::new(99);
         let mut tree2 = Tree::<MyData>::new(root);
-        for i in 0..3 {
+        for i in 0..10 {
             let j: usize = (3 * i + 4) % 31;
             let j8 = j as u8;
             let index: &BitSlice<u8, _> = j8.view_bits();
@@ -301,6 +295,20 @@ mod test {
         println!("> {:?}", itm.sig());
 
         println!("> {}", tree2);
+        println!("> {}", tree2.pre_order());
+
+        let root = MyData::new(100);
+        let mut tree3 = Tree::<MyData>::new(root);
+        for i in 0..10 {
+            let j: usize = (3 * i + 4) % 31;
+            let j8 = j as u8;
+            let index: &BitSlice<u8, _> = j8.view_bits();
+            s = tree3.root.insert_bitvec_iter(my[j].clone(), index);
+            println!("j:{} bits:{} {:?}", j, index, s);
+        }
+        println!("> {}", tree3);
+        println!("> {}", tree3.pre_order());
+
         assert!(true);
     }
 
