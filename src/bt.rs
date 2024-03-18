@@ -5,13 +5,13 @@
 
 use std::fmt::{Debug, Display};
 
-use bitvec::{order::Lsb0, slice::BitSlice};
+use bitvec::{order::Msb0, slice::BitSlice};
 
 /// TT
-pub trait TT: Debug + Display + Default {}
+pub trait TT: Debug + Display {}
 
 /// Node
-#[derive(Default, Debug)]
+#[derive(Debug)]
 struct Node<T: TT> {
     payload: T,
     left: Option<Box<Node<T>>>,
@@ -27,21 +27,17 @@ impl<T: TT> Node<T> {
         }
     }
 
-    fn new_child(payload: T) -> Option<Box<Self>> {
-        Some(Box::new(Node::new(payload)))
-    }
-
     /// insert (iterative)
-    pub fn insert_iter(&mut self, payload: T, input: &BitSlice<u8, Lsb0>) {
+    pub fn insert_iter(&mut self, index: &BitSlice<u8, Msb0>, payload: T) {
         let mut itm = Some(self);
 
-        for bit in input.iter() {
+        for bit in index.iter() {
             let node = itm.take().unwrap();
 
             if bit == false {
                 match node.left {
                     None => {
-                        node.left = Self::new_child(payload);
+                        node.left = Some(Box::new(Node::new(payload)));
                         break;
                     }
                     Some(_) => itm = node.left.as_deref_mut(),
@@ -49,7 +45,7 @@ impl<T: TT> Node<T> {
             } else {
                 match node.righ {
                     None => {
-                        node.righ = Self::new_child(payload);
+                        node.righ = Some(Box::new(Node::new(payload)));
                         break;
                     }
                     Some(_) => itm = node.righ.as_deref_mut(),
@@ -59,17 +55,17 @@ impl<T: TT> Node<T> {
     }
 
     /// insert_bitvec (recursive)
-    fn insert_rec(&mut self, payload: T, index: &BitSlice<u8, Lsb0>) {
+    fn insert_rec(&mut self, index: &BitSlice<u8, Msb0>, payload: T) {
         if let Some(bit) = index.first() {
             if bit == false {
                 match &mut self.left {
-                    None => self.left = Self::new_child(payload),
-                    Some(node) => node.insert_rec(payload, &index[1..]),
+                    None => self.left = Some(Box::new(Node::new(payload))),
+                    Some(node) => node.insert_rec(&index[1..], payload),
                 }
             } else {
                 match &mut self.righ {
-                    None => self.righ = Self::new_child(payload),
-                    Some(node) => node.insert_rec(payload, &index[1..]),
+                    None => self.righ = Some(Box::new(Node::new(payload))),
+                    Some(node) => node.insert_rec(&index[1..], payload),
                 };
             }
         }
@@ -216,14 +212,8 @@ impl<T: TT> Node<T> {
     }
 }
 
-impl<T: TT> Display for Node<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.print_tree_iter(f)
-    }
-}
-
 /// Tree
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct Tree<T: TT> {
     root: Node<T>,
 }
@@ -237,14 +227,15 @@ impl<T: TT> Tree<T> {
     }
 
     /// insert
-    pub fn insert(&mut self, payload: T, index: &BitSlice<u8, Lsb0>) {
-        self.root.insert_iter(payload, index)
+    pub fn insert(&mut self, index: &BitSlice<u8, Msb0>, payload: T) {
+        self.root.insert_iter(index, payload)
     }
 
     /// in_order
     pub fn in_order(&self) -> String {
         self.root.print_in_order_rec()
     }
+
     /// pre_order
     pub fn pre_order(&self) -> String {
         self.root.print_pre_order_iter()
@@ -255,7 +246,7 @@ struct FormatterTreeRecursive<'a, T: TT>(&'a Tree<T>);
 
 impl<T: TT> Display for FormatterTreeRecursive<'_, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "\n■")?;
+        writeln!(f, "■")?;
         self.0.root.print_tree_rec(f, 0)
     }
 }
@@ -264,7 +255,7 @@ struct FormatterTreeIterative<'a, T: TT>(&'a Tree<T>);
 
 impl<T: TT> Display for FormatterTreeIterative<'_, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "\n■")?;
+        writeln!(f, "■")?;
         self.0.root.print_tree_iter(f)
     }
 }
@@ -294,9 +285,9 @@ impl Display for MyData {
 
 #[cfg(test)]
 mod test {
-    use bitvec::{bitvec, prelude::Lsb0, slice::BitSlice, view::BitView};
+    use bitvec::{order::Msb0, view::BitView};
 
-    use crate::bt::{FormatterTreeIterative, FormatterTreeRecursive, MyData, Tree, VERSION};
+    use crate::bt::{FormatterTreeIterative, FormatterTreeRecursive, MyData, Tree};
 
     #[test]
     fn devel() {
@@ -308,11 +299,9 @@ mod test {
         }
 
         println!("{}", FormatterTreeRecursive(&tree));
+        println!("{}", FormatterTreeIterative(&tree));
 
-        let index = bitvec![0, 1, 1, 0, 1, 0, 1, 1];
-        println!(">index {}", index);
-
-        let mut s;
+        // let mut s;
         // s = root.insert(my[10].clone());
         // println!("{:?} {}", s, root);
         // s = root.insert(my[7].clone());
@@ -336,9 +325,9 @@ mod test {
         for i in 0..10 {
             let j: usize = (3 * i + 4) % 31;
             let j8 = j as u8;
-            let index: &BitSlice<u8, _> = j8.view_bits();
-            s = tree2.insert(my[j].clone(), index);
-            println!("j:{} bits:{} {:?}", j, index, s);
+            let index = j8.view_bits::<Msb0>();
+            tree2.insert(index, my[j].clone());
+            println!("j:{:3} bits:{}", j, index);
         }
         println!("{}", FormatterTreeRecursive(&tree2));
         println!("> {}", tree2.pre_order());
@@ -348,9 +337,9 @@ mod test {
         for i in 0..10 {
             let j: usize = (3 * i + 4) % 31;
             let j8 = j as u8;
-            let index: &BitSlice<u8, _> = j8.view_bits();
-            s = tree3.root.insert_iter(my[j].clone(), index);
-            println!("j:{} bits:{} {:?}", j, index, s);
+            let index = j8.view_bits::<Msb0>();
+            tree3.root.insert_iter(index, my[j].clone());
+            println!("j:{:3} bits:{}", j, index);
         }
         println!("{}", FormatterTreeRecursive(&tree3));
         println!("{}", FormatterTreeIterative(&tree3));
@@ -359,52 +348,4 @@ mod test {
 
         assert!(true);
     }
-
-    //
-    //
-    //
-    //
-    //
-    //
-    //
-
-    #[test]
-    fn version() {
-        assert_eq!(VERSION, 10);
-    }
-}
-
-// fn insert() {
-//     let input: &[u8] = &[0x36];
-//     let bits = BitVec::<u8, Lsb0>::from_slice(input);
-
-//     let root = Root::<MyData>::default();
-
-//     for i in bits.into_iter() {
-//         if i == true {}
-//     }
-// }
-
-//
-//
-//
-//
-//
-//
-//
-//
-//
-//
-//
-//
-//
-//
-//
-
-/// Version is.
-const VERSION: usize = 10;
-
-/// v is
-pub fn v() -> usize {
-    VERSION
 }
