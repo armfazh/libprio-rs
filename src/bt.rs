@@ -8,7 +8,7 @@ use std::fmt::{Debug, Display};
 use bitvec::{order::Lsb0, slice::BitSlice};
 
 /// TT
-pub trait TT: Debug + Display + Default + Copy {}
+pub trait TT: Debug + Display + Default {}
 
 /// Node
 #[derive(Default, Debug)]
@@ -37,23 +37,23 @@ impl<T: TT> Node<T> {
 
         for bit in input.iter() {
             let node = itm.take().unwrap();
-            match *bit {
-                false => {
-                    if node.left.is_none() {
+
+            if bit == false {
+                match node.left {
+                    None => {
                         node.left = Self::new_child(payload);
                         break;
-                    } else {
-                        itm = node.left.as_deref_mut();
                     }
-                }
-                true => {
-                    if node.righ.is_none() {
+                    Some(_) => itm = node.left.as_deref_mut(),
+                };
+            } else {
+                match node.righ {
+                    None => {
                         node.righ = Self::new_child(payload);
                         break;
-                    } else {
-                        itm = node.righ.as_deref_mut();
                     }
-                }
+                    Some(_) => itm = node.righ.as_deref_mut(),
+                };
             }
         }
     }
@@ -64,12 +64,12 @@ impl<T: TT> Node<T> {
             if bit == false {
                 match &mut self.left {
                     None => self.left = Self::new_child(payload),
-                    Some(n) => n.insert_rec(payload, &index[1..]),
+                    Some(node) => node.insert_rec(payload, &index[1..]),
                 }
             } else {
                 match &mut self.righ {
                     None => self.righ = Self::new_child(payload),
-                    Some(n) => n.insert_rec(payload, &index[1..]),
+                    Some(node) => node.insert_rec(payload, &index[1..]),
                 };
             }
         }
@@ -80,14 +80,14 @@ impl<T: TT> Node<T> {
         let mut out = String::new();
 
         out += &match &self.left {
-            None => String::from("X "),
+            None => String::from("L "),
             Some(n) => n.print_in_order_rec(),
         };
 
         out += &format!("{} ", self.payload);
 
         out += &match &self.righ {
-            None => String::from("X "),
+            None => String::from("R "),
             Some(n) => n.print_in_order_rec(),
         };
 
@@ -113,18 +113,34 @@ impl<T: TT> Node<T> {
 
     /// print_pre_order (iterative)
     fn print_pre_order_iter(&self) -> String {
+        struct Item<'a, T: TT> {
+            is_righ: bool,
+            value: Option<&'a Node<T>>,
+        }
+
+        let mut stack = Vec::<Item<T>>::new();
+
+        stack.push(Item {
+            is_righ: false,
+            value: Some(self),
+        });
+
         let mut out = String::new();
-
-        let mut stack = Vec::<Option<&Node<T>>>::new();
-        stack.push(Some(self));
-
         while let Some(elem) = stack.pop() {
-            if let Some(node) = elem {
+            if let Some(node) = elem.value {
                 out += &format!("{} ", node.payload);
-                stack.push(node.righ.as_deref());
-                stack.push(node.left.as_deref());
+
+                stack.push(Item {
+                    is_righ: true,
+                    value: node.righ.as_deref(),
+                });
+
+                stack.push(Item {
+                    is_righ: false,
+                    value: node.left.as_deref(),
+                });
             } else {
-                out += &String::from("X ");
+                out += if elem.is_righ { "R " } else { "L " };
             }
         }
 
@@ -132,33 +148,37 @@ impl<T: TT> Node<T> {
     }
 
     fn print_tree_iter(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        struct Format<'a, T: TT> {
+        struct Item<'a, T: TT> {
             name: String,
             level: usize,
             value: Option<&'a Node<T>>,
         }
 
-        let mut stack = Vec::<Format<T>>::new();
+        let mut stack = Vec::<Item<T>>::new();
 
-        stack.push(Format {
+        stack.push(Item {
             name: String::default(),
             level: 0,
             value: Some(self),
         });
 
-        while let Some(elem) = stack.pop() {
+        while let Some(mut elem) = stack.pop() {
             if let Some(node) = elem.value {
                 let prefix = "  ".repeat(elem.level);
 
-                writeln!(f, "{}\n{}└node: {}", elem.name, prefix, node.payload)?;
+                if !elem.name.is_empty() {
+                    elem.name.push('\n')
+                }
 
-                stack.push(Format {
+                writeln!(f, "{}{}└node: {}", elem.name, prefix, node.payload)?;
+
+                stack.push(Item {
                     name: format!("{}└righ:", prefix),
                     level: elem.level + 1,
                     value: node.righ.as_deref(),
                 });
 
-                stack.push(Format {
+                stack.push(Item {
                     name: format!("{}└left:", prefix),
                     level: elem.level + 1,
                     value: node.left.as_deref(),
@@ -198,16 +218,7 @@ impl<T: TT> Node<T> {
 
 impl<T: TT> Display for Node<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.print_tree_rec(f, 0)
-    }
-}
-
-struct Iterative<'a, T: TT>(&'a Tree<T>);
-
-impl<T: TT> Display for Iterative<'_, T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "\n■")?;
-        self.0.root.print_tree_iter(f)
+        self.print_tree_iter(f)
     }
 }
 
@@ -215,12 +226,6 @@ impl<T: TT> Display for Iterative<'_, T> {
 #[derive(Default, Debug)]
 pub struct Tree<T: TT> {
     root: Node<T>,
-}
-
-impl<T: TT> Display for Tree<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "\n■\n{}", self.root)
-    }
 }
 
 impl<T: TT> Tree<T> {
@@ -233,7 +238,7 @@ impl<T: TT> Tree<T> {
 
     /// insert
     pub fn insert(&mut self, payload: T, index: &BitSlice<u8, Lsb0>) {
-        self.root.insert_rec(payload, index)
+        self.root.insert_iter(payload, index)
     }
 
     /// in_order
@@ -242,12 +247,30 @@ impl<T: TT> Tree<T> {
     }
     /// pre_order
     pub fn pre_order(&self) -> String {
-        self.root.print_pre_order_rec()
+        self.root.print_pre_order_iter()
+    }
+}
+
+struct FormatterTreeRecursive<'a, T: TT>(&'a Tree<T>);
+
+impl<T: TT> Display for FormatterTreeRecursive<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "\n■")?;
+        self.0.root.print_tree_rec(f, 0)
+    }
+}
+
+struct FormatterTreeIterative<'a, T: TT>(&'a Tree<T>);
+
+impl<T: TT> Display for FormatterTreeIterative<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "\n■")?;
+        self.0.root.print_tree_iter(f)
     }
 }
 
 /// MyData
-#[derive(Default, Debug, Clone, Copy)]
+#[derive(Default, Debug, Clone)]
 pub struct MyData {
     // data1: String,
     data2: u8,
@@ -273,7 +296,7 @@ impl Display for MyData {
 mod test {
     use bitvec::{bitvec, prelude::Lsb0, slice::BitSlice, view::BitView};
 
-    use crate::bt::{Iterative, MyData, Tree, VERSION};
+    use crate::bt::{FormatterTreeIterative, FormatterTreeRecursive, MyData, Tree, VERSION};
 
     #[test]
     fn devel() {
@@ -284,7 +307,7 @@ mod test {
             my.push(MyData::new(i as u8));
         }
 
-        println!("{}", tree);
+        println!("{}", FormatterTreeRecursive(&tree));
 
         let index = bitvec![0, 1, 1, 0, 1, 0, 1, 1];
         println!(">index {}", index);
@@ -317,7 +340,7 @@ mod test {
             s = tree2.insert(my[j].clone(), index);
             println!("j:{} bits:{} {:?}", j, index, s);
         }
-        println!("> {}", tree2);
+        println!("{}", FormatterTreeRecursive(&tree2));
         println!("> {}", tree2.pre_order());
 
         let root = MyData::new(100);
@@ -329,11 +352,10 @@ mod test {
             s = tree3.root.insert_iter(my[j].clone(), index);
             println!("j:{} bits:{} {:?}", j, index, s);
         }
-        println!("> {}", tree3);
-        println!("> {}", tree3.pre_order());
+        println!("{}", FormatterTreeRecursive(&tree3));
+        println!("{}", FormatterTreeIterative(&tree3));
+        println!("> {}", tree3.root.print_pre_order_rec());
         println!("> {}", tree3.root.print_pre_order_iter());
-        println!("> {}", Iterative(&tree3));
-        println!("> {}", tree3);
 
         assert!(true);
     }
