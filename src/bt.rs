@@ -5,7 +5,10 @@
 
 use std::fmt::{Debug, Display};
 
-use bitvec::{order::Msb0, slice::BitSlice};
+use bitvec::{
+    order::{BitOrder, Msb0},
+    slice::BitSlice,
+};
 
 /// TT
 pub trait TT: Debug + Display {}
@@ -28,7 +31,7 @@ impl<T: TT> Node<T> {
     }
 
     /// insert (iterative)
-    pub fn insert_iter(&mut self, index: &BitSlice<u8, Msb0>, payload: T) {
+    pub fn insert_iter<O: BitOrder>(&mut self, index: &BitSlice<u8, O>, payload: T) {
         let mut itm = Some(self);
 
         for bit in index.iter() {
@@ -210,6 +213,46 @@ impl<T: TT> Node<T> {
 
         Ok(())
     }
+
+    /// dot_pre_order (recursive)
+    fn dot_pre_order_rec(&self, name: &str) -> String {
+        let mut out = String::new();
+
+        out += &format!(
+            "  {} [label=\"{} ({})\"];\n",
+            name,
+            &name[1..],
+            self.payload
+        );
+
+        out += &match &self.left {
+            None => String::from(""),
+            Some(node) => {
+                let next = &format!("{}0", name);
+                format!(
+                    "  {} -> {} [label=\"0\"];\n{}",
+                    name,
+                    next,
+                    node.dot_pre_order_rec(next)
+                )
+            }
+        };
+
+        out += &match &self.righ {
+            None => String::from(""),
+            Some(node) => {
+                let next = &format!("{}1", name);
+                format!(
+                    "  {} -> {} [label=\"1\"];\n{}",
+                    name,
+                    next,
+                    node.dot_pre_order_rec(next)
+                )
+            }
+        };
+
+        out
+    }
 }
 
 /// Tree
@@ -239,6 +282,9 @@ impl<T: TT> Tree<T> {
     /// pre_order
     pub fn pre_order(&self) -> String {
         self.root.print_pre_order_iter()
+    }
+    fn dot_pre_order_rec(&self) -> String {
+        format!("digraph root{{\n{}}}", self.root.dot_pre_order_rec("N"))
     }
 }
 
@@ -345,6 +391,7 @@ mod test {
         println!("{}", FormatterTreeIterative(&tree3));
         println!("> {}", tree3.root.print_pre_order_rec());
         println!("> {}", tree3.root.print_pre_order_iter());
+        println!("> {}", tree3.dot_pre_order_rec());
 
         assert!(true);
     }
