@@ -10,8 +10,10 @@ use bitvec::{
     slice::BitSlice,
 };
 
+use crate::codec::{CodecError, Encode};
+
 /// TT
-pub trait TT: Debug + Display {}
+pub trait TT: Debug + Display + Encode {}
 
 /// Node
 #[derive(Debug)]
@@ -255,6 +257,33 @@ impl<T: TT> Node<T> {
     }
 }
 
+impl<T: TT> Encode for Node<T> {
+    fn encode(&self, bytes: &mut Vec<u8>) -> Result<(), CodecError> {
+        #[repr(u8)]
+        enum Marker {
+            None = 0u8,
+            Node = 1u8,
+        }
+        let mut stack = Vec::<Option<&Node<T>>>::new();
+
+        stack.push(Some(self));
+
+        while let Some(elem) = stack.pop() {
+            if let Some(node) = elem {
+                u8::encode(&(Marker::Node as u8), bytes)?;
+                node.payload.encode(bytes)?;
+
+                stack.push(node.righ.as_deref());
+                stack.push(node.left.as_deref());
+            } else {
+                u8::encode(&(Marker::None as u8), bytes)?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
 /// Tree
 #[derive(Debug)]
 pub struct Tree<T: TT> {
@@ -283,8 +312,16 @@ impl<T: TT> Tree<T> {
     pub fn pre_order(&self) -> String {
         self.root.print_pre_order_iter()
     }
-    fn dot_pre_order_rec(&self) -> String {
+
+    /// dot_pre_order_rec
+    pub fn dot_pre_order_rec(&self) -> String {
         format!("digraph root{{\n{}}}", self.root.dot_pre_order_rec("N"))
+    }
+}
+
+impl<T: TT> Encode for Tree<T> {
+    fn encode(&self, bytes: &mut Vec<u8>) -> Result<(), CodecError> {
+        self.root.encode(bytes)
     }
 }
 
@@ -323,6 +360,12 @@ impl MyData {
 
 impl TT for MyData {}
 
+impl Encode for MyData {
+    fn encode(&self, bytes: &mut Vec<u8>) -> Result<(), CodecError> {
+        u8::encode(&self.data2, bytes)
+    }
+}
+
 impl Display for MyData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.data2)
@@ -333,7 +376,10 @@ impl Display for MyData {
 mod test {
     use bitvec::{order::Msb0, view::BitView};
 
-    use crate::bt::{FormatterTreeIterative, FormatterTreeRecursive, MyData, Tree};
+    use crate::{
+        bt::{FormatterTreeIterative, FormatterTreeRecursive, MyData, Tree},
+        codec::Encode,
+    };
 
     #[test]
     fn devel() {
@@ -392,6 +438,8 @@ mod test {
         println!("> {}", tree3.root.print_pre_order_rec());
         println!("> {}", tree3.root.print_pre_order_iter());
         println!("> {}", tree3.dot_pre_order_rec());
+
+        println!("> {:?}", tree3.get_encoded().unwrap());
 
         assert!(true);
     }
