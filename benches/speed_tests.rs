@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #[cfg(feature = "experimental")]
+use bitvec::{bits, order::Lsb0};
+#[cfg(feature = "experimental")]
 use criterion::Throughput;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 #[cfg(feature = "experimental")]
@@ -821,7 +823,108 @@ fn vidpf(c: &mut Criterion) {
 }
 
 #[cfg(feature = "experimental")]
-criterion_group!(benches, poplar1, prio3, prio2, poly_mul, prng, idpf, dp_noise, vidpf);
+fn old_insert_at_root<F: FieldElement>(path: &IdpfInput) {
+    let mut tree = prio::bt_old::BinaryTree::<F>::default();
+    let mut value = F::one();
+    for (i, _p) in path.iter().enumerate() {
+        let prefix = &path[..i];
+        match tree.insert(prefix, value) {
+            Ok(_) | Err(prio::bt_old::BinaryTreeError::InsertNonEmptyNode(_)) => {}
+            Err(e) => panic!("{}", e),
+        };
+        value += F::one()
+    }
+}
+
+#[cfg(feature = "experimental")]
+fn old_insert_at_node<F: FieldElement>(path: &IdpfInput) {
+    let mut tree = prio::bt_old::BinaryTree::<F>::default();
+    let mut value = F::one();
+    tree.insert(bits!(), value).unwrap();
+    let mut node = tree.get_node(bits!()).unwrap();
+
+    for (i, _p) in path.iter().enumerate() {
+        let prefix = &path[i..i + 1];
+        match node.insert(prefix, value) {
+            Ok(_) | Err(prio::bt_old::BinaryTreeError::InsertNonEmptyNode(_)) => {}
+            Err(e) => panic!("{}", e),
+        };
+        node = node.get_node(prefix).unwrap();
+        value += F::one()
+    }
+}
+
+#[cfg(feature = "experimental")]
+fn new_insert_at_root<F: FieldElement>(path: &IdpfInput) {
+    let mut tree = prio::bt::BinaryTree::<F>::default();
+    let mut value = F::one();
+    for (i, _p) in path.iter().enumerate() {
+        let prefix = &path[..i];
+        match tree.insert(prefix, value) {
+            Ok(_) | Err(prio::bt::BinaryTreeError::InsertNonEmptyNode(_)) => {}
+            Err(e) => panic!("{}", e),
+        };
+        value += F::one()
+    }
+}
+
+#[cfg(feature = "experimental")]
+fn new_insert_at_node<F: FieldElement>(path: &IdpfInput) {
+    let mut tree = prio::bt::BinaryTree::<F>::default();
+    let mut value = F::one();
+    let mut node = tree.insert(bits!(), value).unwrap();
+
+    for (i, _p) in path.iter().enumerate() {
+        let prefix = &path[i..i + 1];
+        match tree.insert_at(node, prefix, value) {
+            Ok(next) => node = next,
+            Err(prio::bt::BinaryTreeError::InsertNonEmptyNode(_)) => {}
+            Err(e) => panic!("{}", e),
+        };
+        value += F::one()
+    }
+}
+
+/// Benchmark Binary Tree performance.
+#[cfg(feature = "experimental")]
+fn bt(c: &mut Criterion) {
+    let test_sizes = [8usize, 64, 256];
+    const NUM_PATHS: usize = 1000;
+    type Fp = Field255;
+
+    type Item<'a> = (&'a str, fn(&IdpfInput));
+    let insert_functions: &[Item] = &[
+        ("old/insert_at_root", old_insert_at_root::<Fp>),
+        ("old/insert_at_node", old_insert_at_node::<Fp>),
+        ("new/insert_at_root", new_insert_at_root::<Fp>),
+        ("new/insert_at_node", new_insert_at_node::<Fp>),
+    ];
+
+    for (name, insert_fn) in insert_functions {
+        let mut group = c.benchmark_group(format!("bt/{}", name));
+        for size in test_sizes.iter() {
+            let paths = (0..NUM_PATHS)
+                .map(|_| {
+                    IdpfInput::from_bools(
+                        &iter::repeat_with(random).take(*size).collect::<Vec<bool>>(),
+                    )
+                })
+                .collect::<Vec<IdpfInput>>();
+
+            group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _size| {
+                b.iter(|| {
+                    for path in paths.iter() {
+                        insert_fn(path);
+                    }
+                });
+            });
+        }
+        group.finish();
+    }
+}
+
+#[cfg(feature = "experimental")]
+criterion_group!(benches, poplar1, prio3, prio2, poly_mul, prng, idpf, dp_noise, vidpf, bt);
 #[cfg(not(feature = "experimental"))]
 criterion_group!(benches, prio3, prng, poly_mul);
 
