@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #[cfg(feature = "experimental")]
+use bitvec::{bits, order::Lsb0};
+#[cfg(feature = "experimental")]
 use criterion::Throughput;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 #[cfg(feature = "experimental")]
@@ -821,7 +823,121 @@ fn vidpf(c: &mut Criterion) {
 }
 
 #[cfg(feature = "experimental")]
-criterion_group!(benches, poplar1, prio3, prio2, poly_mul, prng, idpf, dp_noise, vidpf);
+fn old_insert_at_root<F: FieldElement>(tree: &mut prio::bt_old::BinaryTree<F>, path: &IdpfInput) {
+    let mut value = F::one();
+    for i in 1..=path.len() {
+        let prefix = &path[..i];
+        match tree.insert(prefix, value) {
+            Ok(_) | Err(prio::bt_old::BinaryTreeError::InsertNonEmptyNode(_)) => {}
+            Err(e) => panic!("{}", e),
+        };
+        value += F::one()
+    }
+}
+
+#[cfg(feature = "experimental")]
+fn old_insert_at_node<F: FieldElement>(tree: &mut prio::bt_old::BinaryTree<F>, path: &IdpfInput) {
+    let mut value = F::one();
+    let mut node = tree.get_node(bits!()).unwrap();
+    for i in 0..path.len() {
+        let prefix = &path[i..i + 1];
+        match node.insert(prefix, value) {
+            Ok(_) | Err(prio::bt_old::BinaryTreeError::InsertNonEmptyNode(_)) => {}
+            Err(e) => panic!("{}", e),
+        };
+        node = node.get_node(prefix).unwrap();
+        value += F::one()
+    }
+}
+
+#[cfg(feature = "experimental")]
+fn new_insert_at_root<F: FieldElement>(tree: &mut prio::bt::BinaryTree<F>, path: &IdpfInput) {
+    let mut value = F::one();
+    for i in 1..=path.len() {
+        let prefix = &path[..i];
+        match tree.insert(prefix, value) {
+            Ok(_) | Err(prio::bt::BinaryTreeError::InsertNonEmptyNode(_)) => {}
+            Err(e) => panic!("{}", e),
+        };
+        value += F::one()
+    }
+}
+
+#[cfg(feature = "experimental")]
+fn new_insert_at_node<F: FieldElement>(tree: &mut prio::bt::BinaryTree<F>, path: &IdpfInput) {
+    let mut value = F::one();
+    let mut node = tree.get_node(bits!()).unwrap();
+    for i in 0..path.len() {
+        let prefix = &path[i..i + 1];
+        match tree.insert_at(node, prefix, value) {
+            Ok(next) => node = next,
+            Err(prio::bt::BinaryTreeError::InsertNonEmptyNode(_)) => {
+                node = tree.get_node_at(node, prefix).unwrap()
+            }
+            Err(e) => panic!("{}", e),
+        };
+        value += F::one()
+    }
+}
+
+/// Benchmark Binary Tree performance.
+#[cfg(feature = "experimental")]
+fn bt(c: &mut Criterion) {
+    let test_sizes = [16usize, 64, 128, 256, 512];
+    const NUM_PATHS: usize = 1000;
+    type Fp = Field255;
+    type OldTree = prio::bt_old::BinaryTree<Fp>;
+    type NewTree = prio::bt::BinaryTree<Fp>;
+
+    enum Item<'a> {
+        Old(&'a str, fn(&mut OldTree, &IdpfInput)),
+        New(&'a str, fn(&mut NewTree, &IdpfInput)),
+    }
+
+    let mut insert = Vec::new();
+    insert.push(Item::Old("old/insert_at_root", old_insert_at_root::<Fp>));
+    insert.push(Item::New("new/insert_at_root", new_insert_at_root::<Fp>));
+    insert.push(Item::Old("old/insert_at_node", old_insert_at_node::<Fp>));
+    insert.push(Item::New("new/insert_at_node", new_insert_at_node::<Fp>));
+
+    for size in test_sizes {
+        let paths = iter::repeat(IdpfInput::from_bools(
+            &iter::repeat_with(random).take(size).collect::<Vec<bool>>(),
+        ))
+        .take(NUM_PATHS)
+        .collect::<Vec<IdpfInput>>();
+
+        for entry in insert.iter() {
+            match *entry {
+                Item::Old(name, insert_func) => {
+                    c.bench_function(&format!("bt/{}/{}", name, size), |b| {
+                        b.iter(|| {
+                            let mut tree = OldTree::default();
+                            tree.insert(bits!(), Fp::zero()).unwrap();
+                            for path in paths.iter() {
+                                insert_func(&mut tree, path);
+                            }
+                        })
+                    })
+                }
+                Item::New(name, insert_func) => {
+                    c.bench_function(&format!("bt/{}/{}", name, size), |b| {
+                        b.iter(|| {
+                            let mut tree = NewTree::default();
+                            tree.insert(bits!(), Fp::zero()).unwrap();
+                            for path in paths.iter() {
+                                insert_func(&mut tree, path);
+                            }
+                        })
+                    })
+                }
+            };
+        }
+    }
+}
+
+#[cfg(feature = "experimental")]
+criterion_group!(benches, poplar1, prio3, prio2, poly_mul, prng, idpf, dp_noise, vidpf, bt);
 #[cfg(not(feature = "experimental"))]
 criterion_group!(benches, prio3, prng, poly_mul);
 
