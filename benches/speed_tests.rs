@@ -823,10 +823,9 @@ fn vidpf(c: &mut Criterion) {
 }
 
 #[cfg(feature = "experimental")]
-fn old_insert_at_root<F: FieldElement>(path: &IdpfInput) {
-    let mut tree = prio::bt_old::BinaryTree::<F>::default();
+fn old_insert_at_root<F: FieldElement>(tree: &mut prio::bt_old::BinaryTree<F>, path: &IdpfInput) {
     let mut value = F::one();
-    for (i, _p) in path.iter().enumerate() {
+    for i in 1..=path.len() {
         let prefix = &path[..i];
         match tree.insert(prefix, value) {
             Ok(_) | Err(prio::bt_old::BinaryTreeError::InsertNonEmptyNode(_)) => {}
@@ -837,13 +836,10 @@ fn old_insert_at_root<F: FieldElement>(path: &IdpfInput) {
 }
 
 #[cfg(feature = "experimental")]
-fn old_insert_at_node<F: FieldElement>(path: &IdpfInput) {
-    let mut tree = prio::bt_old::BinaryTree::<F>::default();
+fn old_insert_at_node<F: FieldElement>(tree: &mut prio::bt_old::BinaryTree<F>, path: &IdpfInput) {
     let mut value = F::one();
-    tree.insert(bits!(), value).unwrap();
     let mut node = tree.get_node(bits!()).unwrap();
-
-    for (i, _p) in path.iter().enumerate() {
+    for i in 0..path.len() {
         let prefix = &path[i..i + 1];
         match node.insert(prefix, value) {
             Ok(_) | Err(prio::bt_old::BinaryTreeError::InsertNonEmptyNode(_)) => {}
@@ -855,10 +851,9 @@ fn old_insert_at_node<F: FieldElement>(path: &IdpfInput) {
 }
 
 #[cfg(feature = "experimental")]
-fn new_insert_at_root<F: FieldElement>(path: &IdpfInput) {
-    let mut tree = prio::bt::BinaryTree::<F>::default();
+fn new_insert_at_root<F: FieldElement>(tree: &mut prio::bt::BinaryTree<F>, path: &IdpfInput) {
     let mut value = F::one();
-    for (i, _p) in path.iter().enumerate() {
+    for i in 1..=path.len() {
         let prefix = &path[..i];
         match tree.insert(prefix, value) {
             Ok(_) | Err(prio::bt::BinaryTreeError::InsertNonEmptyNode(_)) => {}
@@ -869,16 +864,16 @@ fn new_insert_at_root<F: FieldElement>(path: &IdpfInput) {
 }
 
 #[cfg(feature = "experimental")]
-fn new_insert_at_node<F: FieldElement>(path: &IdpfInput) {
-    let mut tree = prio::bt::BinaryTree::<F>::default();
+fn new_insert_at_node<F: FieldElement>(tree: &mut prio::bt::BinaryTree<F>, path: &IdpfInput) {
     let mut value = F::one();
-    let mut node = tree.insert(bits!(), value).unwrap();
-
-    for (i, _p) in path.iter().enumerate() {
+    let mut node = tree.get_node(bits!()).unwrap();
+    for i in 0..path.len() {
         let prefix = &path[i..i + 1];
         match tree.insert_at(node, prefix, value) {
             Ok(next) => node = next,
-            Err(prio::bt::BinaryTreeError::InsertNonEmptyNode(_)) => {}
+            Err(prio::bt::BinaryTreeError::InsertNonEmptyNode(_)) => {
+                node = tree.get_node_at(node, prefix).unwrap()
+            }
             Err(e) => panic!("{}", e),
         };
         value += F::one()
@@ -888,38 +883,56 @@ fn new_insert_at_node<F: FieldElement>(path: &IdpfInput) {
 /// Benchmark Binary Tree performance.
 #[cfg(feature = "experimental")]
 fn bt(c: &mut Criterion) {
-    let test_sizes = [8usize, 64, 256];
+    let test_sizes = [16usize, 64, 128, 256, 512];
     const NUM_PATHS: usize = 1000;
     type Fp = Field255;
+    type OldTree = prio::bt_old::BinaryTree<Fp>;
+    type NewTree = prio::bt::BinaryTree<Fp>;
 
-    type Item<'a> = (&'a str, fn(&IdpfInput));
-    let insert_functions: &[Item] = &[
-        ("old/insert_at_root", old_insert_at_root::<Fp>),
-        ("old/insert_at_node", old_insert_at_node::<Fp>),
-        ("new/insert_at_root", new_insert_at_root::<Fp>),
-        ("new/insert_at_node", new_insert_at_node::<Fp>),
-    ];
+    enum Item<'a> {
+        Old(&'a str, fn(&mut OldTree, &IdpfInput)),
+        New(&'a str, fn(&mut NewTree, &IdpfInput)),
+    }
 
-    for (name, insert_fn) in insert_functions {
-        let mut group = c.benchmark_group(format!("bt/{}", name));
-        for size in test_sizes.iter() {
-            let paths = (0..NUM_PATHS)
-                .map(|_| {
-                    IdpfInput::from_bools(
-                        &iter::repeat_with(random).take(*size).collect::<Vec<bool>>(),
-                    )
-                })
-                .collect::<Vec<IdpfInput>>();
+    let mut insert = Vec::new();
+    insert.push(Item::Old("old/insert_at_root", old_insert_at_root::<Fp>));
+    insert.push(Item::New("new/insert_at_root", new_insert_at_root::<Fp>));
+    insert.push(Item::Old("old/insert_at_node", old_insert_at_node::<Fp>));
+    insert.push(Item::New("new/insert_at_node", new_insert_at_node::<Fp>));
 
-            group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _size| {
-                b.iter(|| {
-                    for path in paths.iter() {
-                        insert_fn(path);
-                    }
-                });
-            });
+    for size in test_sizes {
+        let paths = iter::repeat(IdpfInput::from_bools(
+            &iter::repeat_with(random).take(size).collect::<Vec<bool>>(),
+        ))
+        .take(NUM_PATHS)
+        .collect::<Vec<IdpfInput>>();
+
+        for entry in insert.iter() {
+            match *entry {
+                Item::Old(name, insert_func) => {
+                    c.bench_function(&format!("bt/{}/{}", name, size), |b| {
+                        b.iter(|| {
+                            let mut tree = OldTree::default();
+                            tree.insert(bits!(), Fp::zero()).unwrap();
+                            for path in paths.iter() {
+                                insert_func(&mut tree, path);
+                            }
+                        })
+                    })
+                }
+                Item::New(name, insert_func) => {
+                    c.bench_function(&format!("bt/{}/{}", name, size), |b| {
+                        b.iter(|| {
+                            let mut tree = NewTree::default();
+                            tree.insert(bits!(), Fp::zero()).unwrap();
+                            for path in paths.iter() {
+                                insert_func(&mut tree, path);
+                            }
+                        })
+                    })
+                }
+            };
         }
-        group.finish();
     }
 }
 
