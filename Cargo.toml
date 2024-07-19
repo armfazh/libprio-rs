@@ -51,7 +51,7 @@ prio = { path = ".", features = ["crypto-dependencies", "test-util"] }
 statrs = "0.17.1"
 
 [features]
-default = ["crypto-dependencies"]
+default = ["crypto-dependencies", "fixed", "num-traits"]
 experimental = ["bitvec", "fiat-crypto", "fixed", "num-bigint", "num-rational", "num-traits", "num-integer", "num-iter"]
 multithreaded = ["rayon"]
 crypto-dependencies = ["aes", "ctr", "hmac", "sha2"]

@@ -2,6 +2,10 @@
 
 //! Finite field arithmetic for any field GF(p) for which p < 2^128.
 
+mod single_word;
+
+use single_word::FieldParametersSingleWord;
+
 /// For each set of field parameters we pre-compute the 1st, 2nd, 4th, ..., 2^20-th principal roots
 /// of unity. The largest of these is used to run the FFT algorithm on an input of size 2^20. This
 /// is the largest input size we would ever need for the cryptographic applications in this crate.
@@ -279,17 +283,49 @@ fn modp(x: u128, p: u128) -> u128 {
     z.wrapping_add(m & p)
 }
 
-pub(crate) const FP32: FieldParameters = FieldParameters {
+pub(crate) const FP32: FieldParametersSingleWord<u32> = FieldParametersSingleWord {
     p: 4293918721, // 32-bit prime
-    mu: 17302828673139736575,
-    r2: 1676699750,
-    g: 1074114499,
+    mu: 4293918719,
+    r2: 266338049,
+    g: 3903828692,
     num_roots: 20,
     bit_mask: 4294967295,
     roots: [
-        2564090464, 1729828257, 306605458, 2294308040, 1648889905, 57098624, 2788941825,
-        2779858277, 368200145, 2760217336, 594450960, 4255832533, 1372848488, 721329415,
-        3873251478, 1134002069, 7138597, 2004587313, 2989350643, 725214187, 1074114499,
+        1048575, 4292870146, 1189722990, 3984864191, 2523259768, 2828840154, 1658715539,
+        1534972560, 3732920810, 3229320047, 2836564014, 2170197442, 3760663902, 2144268387,
+        3849278021, 1395394315, 574397626, 125025876, 3755041587, 2680072542, 3903828692,
+    ],
+};
+
+pub(crate) const FP64: FieldParametersSingleWord<u64> = FieldParametersSingleWord {
+    p: 18446744069414584321, // 64-bit prime
+    mu: 18446744069414584319,
+    r2: 18446744065119617025,
+    g: 15733474329512464024,
+    num_roots: 32,
+    bit_mask: 18446744073709551615,
+    roots: [
+        4294967295,
+        18446744065119617026,
+        18446744069414518785,
+        18374686475393433601,
+        268435456,
+        18446673700670406657,
+        18446744069414584193,
+        576460752303421440,
+        16576810576923738718,
+        6647628942875889800,
+        10087739294013848503,
+        2135208489130820273,
+        10781050935026037169,
+        3878014442329970502,
+        1205735313231991947,
+        2523909884358325590,
+        13797134855221748930,
+        12267112747022536458,
+        430584883067102937,
+        10135969988448727187,
+        6815045114074884550,
     ],
 };
 
@@ -344,6 +380,7 @@ pub(crate) mod tests {
     pub(crate) trait TestFieldParameters {
         fn p(&self) -> u128;
         fn g(&self) -> u128;
+        fn base(&self) -> u128;
         fn r2(&self) -> u128;
         fn mu(&self) -> u64;
         fn bit_mask(&self) -> u128;
@@ -367,6 +404,10 @@ pub(crate) mod tests {
 
         fn g(&self) -> u128 {
             self.g
+        }
+
+        fn base(&self) -> u128 {
+            1u128 << 64
         }
 
         fn r2(&self) -> u128 {
@@ -452,13 +493,23 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_fp32_u128() {
+    fn test_fp32_u32() {
         all_field_parameters_tests(TestFieldParametersData {
             fp: Box::new(FP32),
             expected_p: 4293918721,
             expected_g: 3925978153,
             expected_order: 1 << 20,
         });
+    }
+
+    #[test]
+    fn test_fp64_u64() {
+        all_field_parameters_tests(TestFieldParametersData {
+            fp: Box::new(FP64),
+            expected_p: 18446744069414584321,
+            expected_g: 1753635133440165772,
+            expected_order: 1 << 32,
+        })
     }
 
     #[test]
@@ -485,10 +536,12 @@ pub(crate) mod tests {
 
     fn check_consistency(fp: &dyn TestFieldParameters, p: u128, g: u128, order: u128) {
         assert_eq!(fp.p(), p, "p mismatch");
+        assert!(fp.base().is_power_of_two());
 
-        let mu = match modinverse((-(p as i128)).rem_euclid(1 << 64), 1 << 64) {
+        let base = i128::try_from(fp.base()).unwrap();
+        let mu = match modinverse((-(p as i128)).rem_euclid(base), base) {
             Some(mu) => mu as u64,
-            None => panic!("inverse of -p (mod 2^64) is undefined"),
+            None => panic!("inverse of -p (mod base) is undefined"),
         };
         assert_eq!(fp.mu(), mu, "mu mismatch");
 
