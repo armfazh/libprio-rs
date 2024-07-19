@@ -26,6 +26,7 @@ pub mod field;
 pub mod flp;
 mod fp;
 mod fp_single;
+mod fp_double;
 #[cfg(all(feature = "crypto-dependencies", feature = "experimental"))]
 #[cfg_attr(
     docsrs,
